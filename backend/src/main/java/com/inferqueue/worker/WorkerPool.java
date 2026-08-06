@@ -8,6 +8,7 @@ import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -23,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * y se puede identificar exactamente qué mensajes quedaron huérfanos si uno muere.
  */
 @Component
+@ConditionalOnProperty(name = "inferqueue.worker.enabled", havingValue = "true", matchIfMissing = true)
 public class WorkerPool {
 
     private static final Logger log = LoggerFactory.getLogger(WorkerPool.class);

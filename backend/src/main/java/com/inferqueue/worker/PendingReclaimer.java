@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -25,6 +26,7 @@ import java.util.List;
  * no un resultado corrupto.
  */
 @Component
+@ConditionalOnProperty(name = "inferqueue.worker.enabled", havingValue = "true", matchIfMissing = true)
 public class PendingReclaimer {
 
     private static final Logger log = LoggerFactory.getLogger(PendingReclaimer.class);

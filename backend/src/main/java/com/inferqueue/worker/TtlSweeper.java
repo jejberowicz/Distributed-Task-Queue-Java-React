@@ -1,6 +1,7 @@
 package com.inferqueue.worker;
 
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
@@ -9,6 +10,7 @@ import org.springframework.stereotype.Component;
  * cierra igual para que el cliente vea EXPIRED y no un QUEUED eterno.
  */
 @Component
+@ConditionalOnProperty(name = "inferqueue.worker.enabled", havingValue = "true", matchIfMissing = true)
 public class TtlSweeper {
 
     private final JobExecutor executor;

@@ -1,0 +1,93 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: inferqueue
+      POSTGRES_USER: inferqueue
+      POSTGRES_PASSWORD: inferqueue
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inferqueue"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    # appendonly: si Redis se cae, el PEL (los jobs en vuelo) sobrevive al restart.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "6379:6379"
+
+  # API + WebSockets. No consume la cola: así se puede escalar el frente sin
+  # tocar la capacidad de inference, y viceversa.
+  gateway:
+    build: ./backend
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/inferqueue
+      DB_USER: inferqueue
+      DB_PASSWORD: inferqueue
+      REDIS_HOST: redis
+      WORKER_ENABLED: "false"
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-admin-token}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Consumidores de la cola. `docker compose up --scale worker=3` levanta más
+  # capacidad; cada réplica se registra con su propio consumer name en el group.
+  worker:
+    build: ./backend
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/inferqueue
+      DB_USER: inferqueue
+      DB_PASSWORD: inferqueue
+      REDIS_HOST: redis
+      WORKER_ENABLED: "true"
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      MODEL_ADAPTER: ${MODEL_ADAPTER:-mock}
+      # host.docker.internal permite usar el Ollama que corre en la máquina host.
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      # El gateway ya corrió las migraciones; los workers sólo validan el schema.
+      SPRING_FLYWAY_ENABLED: "false"
+      # No necesita puerto HTTP propio, pero el actuator sirve para el healthcheck.
+      PORT: "8080"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      replicas: 2
+    # Tiempo para que termine los jobs en vuelo antes del SIGKILL.
+    stop_grace_period: 45s
+
+  dashboard:
+    build: ./dashboard
+    depends_on:
+      - gateway
+    ports:
+      - "5173:80"
+
+volumes:
+  pgdata:
+  redisdata:

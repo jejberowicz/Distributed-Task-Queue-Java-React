@@ -29,7 +29,8 @@ public record InferQueueProperties(
     public record Streams(String priority, String standard) {
     }
 
-    public record Worker(int concurrency, Duration pollTimeout) {
+    /** enabled=false deja la instancia como gateway puro: expone la API pero no consume la cola. */
+    public record Worker(boolean enabled, int concurrency, Duration pollTimeout) {
     }
 
     public record RateLimit(Bucket free, Bucket premium) {

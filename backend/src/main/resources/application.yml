@@ -50,7 +50,8 @@ inferqueue:
     retry-backoff-max: 5m
     default-ttl: 30m
   worker:
-    concurrency: 4
+    enabled: ${WORKER_ENABLED:true}
+    concurrency: ${WORKER_CONCURRENCY:4}
     poll-timeout: 2s
   ratelimit:
     free:

@@ -23,7 +23,7 @@ public final class TestProperties {
                         Duration.ofSeconds(2),
                         Duration.ofMinutes(5),
                         Duration.ofMinutes(30)),
-                new InferQueueProperties.Worker(2, Duration.ofSeconds(2)),
+                new InferQueueProperties.Worker(true, 2, Duration.ofSeconds(2)),
                 new InferQueueProperties.RateLimit(
                         new InferQueueProperties.Bucket(20),
                         new InferQueueProperties.Bucket(300)),
