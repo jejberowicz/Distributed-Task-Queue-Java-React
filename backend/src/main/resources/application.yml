@@ -1,0 +1,68 @@
+spring:
+  application:
+    name: inferqueue
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/inferqueue}
+    username: ${DB_USER:inferqueue}
+    password: ${DB_PASSWORD:inferqueue}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+server:
+  port: ${PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: always
+
+inferqueue:
+  queue:
+    streams:
+      priority: infer:priority
+      standard: infer:standard
+    dlq-stream: infer:dlq
+    consumer-group: inferqueue-workers
+    # Un job sin XACK por más de este tiempo se considera huérfano (worker muerto)
+    # y es reclamado con XCLAIM por otro worker.
+    claim-idle-timeout: 60s
+    reclaim-interval: 15s
+    # Cuántos mensajes reclama como máximo cada pasada del reclaimer.
+    reclaim-batch-size: 32
+    max-retries: 3
+    # Backoff exponencial: base * 2^(retryCount)
+    retry-backoff-base: 2s
+    retry-backoff-max: 5m
+    default-ttl: 30m
+  worker:
+    concurrency: 4
+    poll-timeout: 2s
+  ratelimit:
+    free:
+      requests-per-minute: 20
+    premium:
+      requests-per-minute: 300
+  ollama:
+    base-url: ${OLLAMA_URL:http://localhost:11434}
+    timeout: 120s
+    # mock => no requiere Ollama corriendo; ollama => inference real
+    adapter: ${MODEL_ADAPTER:mock}
+
+logging:
+  level:
+    com.inferqueue: INFO
