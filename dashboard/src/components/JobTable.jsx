@@ -1,6 +1,9 @@
-const STATUSES = ['QUEUED', 'PROCESSING', 'DONE', 'FAILED', 'DEAD', 'EXPIRED']
+const STATUSES = ['QUEUED', 'PROCESSING', 'DONE', 'FAILED', 'DEAD', 'EXPIRED', 'CANCELED']
 
-export function JobTable({ jobs, filter, onFilterChange }) {
+/** Sólo se puede cancelar lo que todavía no terminó. */
+const CANCELABLE = new Set(['QUEUED', 'PROCESSING', 'FAILED'])
+
+export function JobTable({ jobs, filter, onFilterChange, onCancel }) {
   const visible = filter ? jobs.filter((job) => job.status === filter) : jobs
 
   return (
@@ -37,6 +40,7 @@ export function JobTable({ jobs, filter, onFilterChange }) {
               <th>Tokens</th>
               <th>Worker</th>
               <th>Resultado</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -57,6 +61,13 @@ export function JobTable({ jobs, filter, onFilterChange }) {
                 <td>{job.tokensUsed ?? '—'}</td>
                 <td className="mono">{job.claimedBy ?? '—'}</td>
                 <td className="result">{job.error ? <span className="err">{job.error}</span> : job.result ?? '—'}</td>
+                <td>
+                  {CANCELABLE.has(job.status) && (
+                    <button className="ghost small" onClick={() => onCancel?.(job.id)}>
+                      Cancelar
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

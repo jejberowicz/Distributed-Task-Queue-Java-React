@@ -68,6 +68,9 @@ public class Job {
     @Column(name = "completed_at")
     private Instant completedAt;
 
+    @Column(name = "canceled_at")
+    private Instant canceledAt;
+
     protected Job() {
     }
 
@@ -115,6 +118,18 @@ public class Job {
         this.status = JobStatus.EXPIRED;
         this.error = "Job excedió su TTL antes de completarse";
         this.completedAt = Instant.now();
+    }
+
+    /**
+     * Baja a pedido del cliente. Sólo tiene efecto si el job todavía no terminó:
+     * un job que ya se completó no se "descompleta", y uno que está PROCESSING
+     * queda CANCELED igual — el worker descarta su resultado al ver el estado terminal.
+     */
+    public void markCanceled() {
+        this.status = JobStatus.CANCELED;
+        this.error = "Cancelado por el cliente";
+        this.canceledAt = Instant.now();
+        this.completedAt = this.canceledAt;
     }
 
     public boolean isExpired(Instant now) {
@@ -191,5 +206,9 @@ public class Job {
 
     public Instant getCompletedAt() {
         return completedAt;
+    }
+
+    public Instant getCanceledAt() {
+        return canceledAt;
     }
 }

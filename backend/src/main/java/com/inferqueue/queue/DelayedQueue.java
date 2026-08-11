@@ -3,6 +3,8 @@ package com.inferqueue.queue;
 import com.inferqueue.config.InferQueueProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -11,6 +13,7 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Redis Streams no tiene entrega diferida, así que el backoff exponencial se
@@ -71,6 +74,27 @@ public class DelayedQueue {
                 jobQueue.enqueue(decode(member));
             }
         }
+    }
+
+    /**
+     * Saca del ZSET los retries pendientes de un job. Se usa al cancelar: sin
+     * esto el job cancelado igual volvería al stream cuando venza su backoff, y
+     * aunque el executor lo descartaría por estado terminal, es trabajo al pedo.
+     */
+    public long cancel(UUID jobId) {
+        long removed = 0;
+        try (Cursor<ZSetOperations.TypedTuple<String>> cursor = redis.opsForZSet()
+                .scan(ZSET_KEY, ScanOptions.scanOptions().match(jobId + "|*").count(100).build())) {
+            while (cursor.hasNext()) {
+                String member = cursor.next().getValue();
+                Long dropped = member == null ? null : redis.opsForZSet().remove(ZSET_KEY, member);
+                removed += dropped == null ? 0 : dropped;
+            }
+        }
+        if (removed > 0) {
+            log.info("Job {}: {} retries diferidos descartados por cancelación", jobId, removed);
+        }
+        return removed;
     }
 
     public long size() {

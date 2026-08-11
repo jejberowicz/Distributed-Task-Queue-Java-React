@@ -4,12 +4,21 @@ import { JobTable } from './components/JobTable'
 import { StatsBar } from './components/StatsBar'
 import { SubmitForm } from './components/SubmitForm'
 import { useJobStream } from './hooks/useJobStream'
-import { clearKey, storeKey, storedKey } from './api/client'
+import { api, clearKey, storeKey, storedKey } from './api/client'
 
 export default function App() {
   const [apiKey, setApiKey] = useState(storedKey())
   const [filter, setFilter] = useState(null)
   const { jobs, stats, connected, error, refresh, setError } = useJobStream(apiKey)
+
+  async function cancel(id) {
+    try {
+      await api.cancelJob(apiKey, id)
+      // No hace falta refrescar: la cancelación emite su propio evento por WS.
+    } catch (e) {
+      setError(e.message)
+    }
+  }
 
   if (!apiKey) {
     return (
@@ -53,7 +62,7 @@ export default function App() {
 
       <StatsBar stats={stats} />
       <SubmitForm apiKey={apiKey} onSubmitted={refresh} onError={setError} />
-      <JobTable jobs={jobs} filter={filter} onFilterChange={setFilter} />
+      <JobTable jobs={jobs} filter={filter} onFilterChange={setFilter} onCancel={cancel} />
     </div>
   )
 }

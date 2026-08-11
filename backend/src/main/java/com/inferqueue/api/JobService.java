@@ -8,6 +8,7 @@ import com.inferqueue.domain.JobRepository;
 import com.inferqueue.domain.JobStatus;
 import com.inferqueue.domain.JobType;
 import com.inferqueue.domain.Priority;
+import com.inferqueue.queue.DelayedQueue;
 import com.inferqueue.queue.JobQueue;
 import com.inferqueue.queue.QueueMessage;
 import org.slf4j.Logger;
@@ -22,7 +23,8 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.List;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -33,13 +35,15 @@ public class JobService {
 
     private final JobRepository jobs;
     private final JobQueue queue;
+    private final DelayedQueue delayedQueue;
     private final InferQueueProperties props;
     private final ApplicationEventPublisher events;
 
-    public JobService(JobRepository jobs, JobQueue queue, InferQueueProperties props,
+    public JobService(JobRepository jobs, JobQueue queue, DelayedQueue delayedQueue, InferQueueProperties props,
                       ApplicationEventPublisher events) {
         this.jobs = jobs;
         this.queue = queue;
+        this.delayedQueue = delayedQueue;
         this.props = props;
         this.events = events;
     }
@@ -79,6 +83,29 @@ public class JobService {
         return jobs.findById(jobId);
     }
 
+    /**
+     * Cancela un job propio. No hay forma de sacar un mensaje ya escrito en un
+     * stream de Redis, así que la cancelación es un estado en Postgres: el
+     * mensaje sigue su curso y el worker lo descarta al ver el estado terminal.
+     * Lo que sí se limpia es el retry diferido, que todavía no llegó al stream.
+     *
+     * @return el job cancelado, o vacío si ya estaba en estado terminal.
+     */
+    @Transactional
+    public Optional<Job> cancel(UUID jobId) {
+        Optional<Job> canceled = jobs.findByIdForUpdate(jobId)
+                .filter(job -> !job.getStatus().isTerminal())
+                .map(job -> {
+                    job.markCanceled();
+                    return jobs.save(job);
+                });
+        canceled.ifPresent(job -> afterCommit(() -> {
+            delayedQueue.cancel(job.getId());
+            events.publishEvent(JobEvent.of(job));
+        }));
+        return canceled;
+    }
+
     @Transactional(readOnly = true)
     public Page<Job> list(UUID apiKeyId, JobStatus status, int page, int size) {
         PageRequest pageable = PageRequest.of(page, Math.min(size, 200));
@@ -93,14 +120,12 @@ public class JobService {
     }
 
     @Transactional(readOnly = true)
-    public List<Long> statusCounts() {
-        return List.of(
-                jobs.countByStatus(JobStatus.QUEUED),
-                jobs.countByStatus(JobStatus.PROCESSING),
-                jobs.countByStatus(JobStatus.DONE),
-                jobs.countByStatus(JobStatus.FAILED),
-                jobs.countByStatus(JobStatus.DEAD),
-                jobs.countByStatus(JobStatus.EXPIRED));
+    public Map<JobStatus, Long> statusCounts() {
+        Map<JobStatus, Long> counts = new EnumMap<>(JobStatus.class);
+        for (JobStatus status : JobStatus.values()) {
+            counts.put(status, jobs.countByStatus(status));
+        }
+        return counts;
     }
 
     private void afterCommit(Runnable action) {

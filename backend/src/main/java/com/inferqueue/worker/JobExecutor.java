@@ -2,7 +2,6 @@ package com.inferqueue.worker;
 
 import com.inferqueue.config.InferQueueProperties;
 import com.inferqueue.domain.Job;
-import com.inferqueue.domain.JobStatus;
 import com.inferqueue.metrics.QueueMetrics;
 import com.inferqueue.queue.DelayedQueue;
 import com.inferqueue.queue.JobQueue;
@@ -69,12 +68,23 @@ public class JobExecutor {
             return;
         }
 
-        state.markProcessing(job.getId(), workerId, recordId.getValue());
+        if (state.markProcessing(job.getId(), workerId, recordId.getValue()).isEmpty()) {
+            // Se cerró entre el chequeo de arriba y el lock (cancelación o TTL).
+            log.debug("Job {} dejó de estar disponible antes de arrancar, lo ackeo", job.getId());
+            settle(stream, recordId);
+            return;
+        }
+
         long startedAt = System.nanoTime();
         try {
             InferenceResult result = adapter.infer(InferenceRequest.from(job));
-            state.markDone(job.getId(), result.output(), result.tokensUsed());
-            metrics.recordCompleted(System.nanoTime() - startedAt, result.tokensUsed());
+            // Si volvió vacío es que lo cancelaron durante la inference: el
+            // resultado se descarta, el estado del cliente manda.
+            if (state.markDone(job.getId(), result.output(), result.tokensUsed()).isPresent()) {
+                metrics.recordCompleted(System.nanoTime() - startedAt, result.tokensUsed());
+            } else {
+                log.info("Job {} se canceló durante la inference; descarto el resultado", job.getId());
+            }
             settle(stream, recordId);
         } catch (InferenceException e) {
             handleFailure(stream, recordId, message, job, e);
@@ -90,7 +100,12 @@ public class JobExecutor {
         boolean canRetry = e.isRetryable() && nextAttempt <= props.queue().maxRetries();
 
         if (canRetry) {
-            state.markRetrying(job.getId(), error);
+            // Un job cancelado no se reintenta: si la transición no prosperó, el
+            // job ya está cerrado y sólo queda sacar el mensaje de la cola.
+            if (state.markRetrying(job.getId(), error).isEmpty()) {
+                settle(stream, recordId);
+                return;
+            }
             // Se ackea el mensaje actual y se programa uno nuevo con delay: el
             // reintento no debe quedar en el PEL bloqueando al reclaimer.
             settle(stream, recordId);
@@ -98,10 +113,11 @@ public class JobExecutor {
             metrics.recordRetry();
             log.warn("Job {} falló (intento {}/{}): {}", job.getId(), nextAttempt, props.queue().maxRetries(), error);
         } else {
-            state.markDead(job.getId(), error);
-            queue.toDeadLetter(message, error);
+            if (state.markDead(job.getId(), error).isPresent()) {
+                queue.toDeadLetter(message, error);
+                metrics.recordDead();
+            }
             settle(stream, recordId);
-            metrics.recordDead();
         }
     }
 
@@ -113,17 +129,17 @@ public class JobExecutor {
 
     /** Marca EXPIRED los jobs que superaron su TTL sin llegar a estado terminal. */
     public int sweepExpired() {
-        var expired = state.findExpired(Instant.now());
-        for (Job job : expired) {
-            if (job.getStatus() != JobStatus.EXPIRED) {
-                state.markExpired(job.getId());
+        int swept = 0;
+        for (Job job : state.findExpired(Instant.now())) {
+            if (state.markExpired(job.getId()).isPresent()) {
                 metrics.recordExpired();
+                swept++;
             }
         }
-        if (!expired.isEmpty()) {
-            log.info("TTL: {} jobs marcados como EXPIRED", expired.size());
+        if (swept > 0) {
+            log.info("TTL: {} jobs marcados como EXPIRED", swept);
         }
-        return expired.size();
+        return swept;
     }
 
     private String truncate(String message) {

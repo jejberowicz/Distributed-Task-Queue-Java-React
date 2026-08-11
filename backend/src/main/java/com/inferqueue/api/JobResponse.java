@@ -23,12 +23,14 @@ public record JobResponse(
         Instant expiresAt,
         Instant createdAt,
         Instant startedAt,
-        Instant completedAt
+        Instant completedAt,
+        Instant canceledAt
 ) {
 
     public static JobResponse from(Job job) {
         return new JobResponse(job.getId(), job.getModel(), job.getJobType(), job.getPrompt(), job.getPriority(),
                 job.getStatus(), job.getResult(), job.getError(), job.getTokensUsed(), job.getRetryCount(),
-                job.getClaimedBy(), job.getExpiresAt(), job.getCreatedAt(), job.getStartedAt(), job.getCompletedAt());
+                job.getClaimedBy(), job.getExpiresAt(), job.getCreatedAt(), job.getStartedAt(), job.getCompletedAt(),
+                job.getCanceledAt());
     }
 }

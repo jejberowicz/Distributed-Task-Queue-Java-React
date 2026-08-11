@@ -4,7 +4,8 @@ const CARDS = [
   { key: 'DONE', label: 'Completados', tone: 'done' },
   { key: 'FAILED', label: 'Reintentando', tone: 'failed' },
   { key: 'DEAD', label: 'Dead letter', tone: 'dead' },
-  { key: 'EXPIRED', label: 'Expirados', tone: 'expired' }
+  { key: 'EXPIRED', label: 'Expirados', tone: 'expired' },
+  { key: 'CANCELED', label: 'Cancelados', tone: 'canceled' }
 ]
 
 export function StatsBar({ stats }) {

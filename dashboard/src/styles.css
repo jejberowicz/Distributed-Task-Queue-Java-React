@@ -12,6 +12,7 @@
   --failed: #db8c3a;
   --dead: #f85149;
   --expired: #8b949e;
+  --canceled: #a371f7;
   color-scheme: dark;
 }
 
@@ -100,6 +101,11 @@ button.ghost,
   font-weight: 500;
 }
 
+button.small {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
 .filters button.active {
   color: var(--text);
   border-color: var(--accent);
@@ -128,6 +134,7 @@ button.ghost,
 .stat-card.failed { border-left-color: var(--failed); }
 .stat-card.dead { border-left-color: var(--dead); }
 .stat-card.expired { border-left-color: var(--expired); }
+.stat-card.canceled { border-left-color: var(--canceled); }
 
 .stat-value {
   font-size: 24px;
@@ -286,6 +293,7 @@ tbody tr:last-child td {
 .badge.failed { color: var(--failed); }
 .badge.dead { color: var(--dead); }
 .badge.expired { color: var(--expired); }
+.badge.canceled { color: var(--canceled); }
 
 .priority.priority {
   color: var(--accent);

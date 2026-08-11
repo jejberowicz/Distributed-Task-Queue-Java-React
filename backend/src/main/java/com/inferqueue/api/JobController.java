@@ -7,6 +7,7 @@ import com.inferqueue.security.CurrentApiKey;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static org.springframework.http.HttpStatus.CONFLICT;
 import static org.springframework.http.HttpStatus.FORBIDDEN;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
 
@@ -45,12 +47,29 @@ public class JobController {
 
     @GetMapping("/{id}")
     public JobResponse get(@CurrentApiKey ApiKey apiKey, @PathVariable UUID id) {
+        return JobResponse.from(ownedJob(apiKey, id));
+    }
+
+    /**
+     * Cancela un job propio. Devuelve 409 si ya había terminado: no es un error
+     * del cliente, pero tampoco un no-op silencioso — el resultado ya existe.
+     */
+    @DeleteMapping("/{id}")
+    public JobResponse cancel(@CurrentApiKey ApiKey apiKey, @PathVariable UUID id) {
+        Job job = ownedJob(apiKey, id);
+        return jobService.cancel(job.getId())
+                .map(JobResponse::from)
+                .orElseThrow(() -> new ResponseStatusException(CONFLICT,
+                        "El job ya está en estado " + job.getStatus() + " y no se puede cancelar"));
+    }
+
+    private Job ownedJob(ApiKey apiKey, UUID id) {
         Job job = jobService.find(id).orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "Job inexistente"));
         // Una API key sólo ve sus propios jobs.
         if (!job.getApiKeyId().equals(apiKey.getId())) {
             throw new ResponseStatusException(FORBIDDEN, "El job pertenece a otra API key");
         }
-        return JobResponse.from(job);
+        return job;
     }
 
     @GetMapping

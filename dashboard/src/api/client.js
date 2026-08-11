@@ -40,6 +40,7 @@ export const api = {
   listJobs: (apiKey, status) =>
     request(`/v1/jobs${status ? `?status=${status}` : ''}`, { apiKey }),
   submitJob: (apiKey, job) => request('/v1/jobs', { method: 'POST', body: job, apiKey }),
+  cancelJob: (apiKey, id) => request(`/v1/jobs/${id}`, { method: 'DELETE', apiKey }),
   stats: (apiKey) => request('/v1/stats', { apiKey }),
   usage: (apiKey) => request('/v1/jobs/usage', { apiKey }),
   issueKey: (adminToken, name, tier) =>

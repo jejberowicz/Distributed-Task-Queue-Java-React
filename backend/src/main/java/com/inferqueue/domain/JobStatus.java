@@ -11,9 +11,11 @@ public enum JobStatus {
     /** Superó su TTL antes de completarse. */
     EXPIRED,
     /** Agotó los reintentos y terminó en la dead-letter queue. */
-    DEAD;
+    DEAD,
+    /** El cliente lo dio de baja antes de que llegara a completarse. */
+    CANCELED;
 
     public boolean isTerminal() {
-        return this == DONE || this == EXPIRED || this == DEAD;
+        return this == DONE || this == EXPIRED || this == DEAD || this == CANCELED;
     }
 }

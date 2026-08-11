@@ -8,7 +8,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /** Estado agregado de la cola para el dashboard. */
@@ -28,14 +27,8 @@ public class StatsController {
 
     @GetMapping
     public Map<String, Object> stats() {
-        List<Long> counts = jobService.statusCounts();
         Map<String, Object> byStatus = new LinkedHashMap<>();
-        byStatus.put("QUEUED", counts.get(0));
-        byStatus.put("PROCESSING", counts.get(1));
-        byStatus.put("DONE", counts.get(2));
-        byStatus.put("FAILED", counts.get(3));
-        byStatus.put("DEAD", counts.get(4));
-        byStatus.put("EXPIRED", counts.get(5));
+        jobService.statusCounts().forEach((status, count) -> byStatus.put(status.name(), count));
 
         Map<String, Object> streams = new LinkedHashMap<>();
         streams.put("priorityDepth", queue.depth(Priority.PRIORITY));
