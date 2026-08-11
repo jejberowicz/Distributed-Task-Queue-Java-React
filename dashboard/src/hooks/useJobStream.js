@@ -18,8 +18,8 @@ export function useJobStream(apiKey) {
   const [stats, setStats] = useState(null)
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState(null)
-  const clientRef = useRef(null)
-  const ownKeyId = useRef(null)
+  // El topic es por API key, así que hay que saber el id antes de suscribirse.
+  const [apiKeyId, setApiKeyId] = useState(null)
 
   const upsert = useCallback((event) => {
     setJobs((current) => {
@@ -63,15 +63,12 @@ export function useJobStream(apiKey) {
     refresh()
   }, [refresh])
 
-  // Necesitamos el id de nuestra API key para filtrar el topic global.
   useEffect(() => {
     if (!apiKey) return
     api
       .usage(apiKey)
-      .then((usage) => {
-        ownKeyId.current = usage.apiKeyId
-      })
-      .catch(() => {})
+      .then((usage) => setApiKeyId(usage.apiKeyId))
+      .catch((e) => setError(e.message))
   }, [apiKey])
 
   // Refresco periódico de las métricas agregadas: los eventos traen jobs
@@ -88,33 +85,25 @@ export function useJobStream(apiKey) {
   }, [apiKey])
 
   useEffect(() => {
-    if (!apiKey) return undefined
+    if (!apiKey || !apiKeyId) return undefined
 
     const client = new Client({
       brokerURL: WS_URL,
       reconnectDelay: 3000,
+      // La API key viaja en el CONNECT: el gateway la valida ahí y sólo después
+      // deja suscribirse al topic de esa key.
+      connectHeaders: { Authorization: `Bearer ${apiKey}` },
       onConnect: () => {
         setConnected(true)
-        client.subscribe('/topic/jobs', (message) => {
-          const event = JSON.parse(message.body)
-          // El topic es global; cada dashboard se queda sólo con los jobs
-          // de su propia API key.
-          if (!ownKeyId.current || event.apiKeyId === ownKeyId.current) {
-            upsert(event)
-          }
-        })
+        client.subscribe(`/topic/keys/${apiKeyId}/jobs`, (message) => upsert(JSON.parse(message.body)))
       },
       onWebSocketClose: () => setConnected(false),
       onStompError: (frame) => setError(frame.headers?.message ?? 'Error STOMP')
     })
 
     client.activate()
-    clientRef.current = client
-    return () => {
-      client.deactivate()
-      clientRef.current = null
-    }
-  }, [apiKey, upsert])
+    return () => client.deactivate()
+  }, [apiKey, apiKeyId, upsert])
 
   return { jobs, stats, connected, error, refresh, setError }
 }

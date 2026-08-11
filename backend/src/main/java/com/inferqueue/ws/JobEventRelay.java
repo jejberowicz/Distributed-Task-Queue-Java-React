@@ -31,9 +31,12 @@ public class JobEventRelay {
     public void handleMessage(String payload) {
         try {
             JobEvent event = objectMapper.readValue(payload, JobEvent.class);
-            messaging.convertAndSend("/topic/jobs", event);
+            // Un topic por API key, no uno global: el aislamiento entre tenants lo
+            // hace el broker, no el cliente. Ver StompAuthInterceptor.
+            String topic = StompAuthInterceptor.topicFor(event.apiKeyId());
+            messaging.convertAndSend(topic, event);
             // Topic por job para que un cliente pueda seguir uno solo sin recibir todo.
-            messaging.convertAndSend("/topic/jobs/" + event.jobId(), event);
+            messaging.convertAndSend(topic + "/" + event.jobId(), event);
         } catch (Exception e) {
             log.warn("Evento de job ilegible: {}", e.toString());
         }
