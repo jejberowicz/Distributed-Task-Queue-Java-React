@@ -2,6 +2,7 @@ package com.inferqueue.ws;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.inferqueue.domain.JobEvent;
+import com.inferqueue.domain.JobTokenEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
@@ -42,17 +43,33 @@ public class JobEventRelay {
         }
     }
 
+    /** Invocado con el payload del canal de tokens. */
+    public void handleTokenMessage(String payload) {
+        try {
+            JobTokenEvent event = objectMapper.readValue(payload, JobTokenEvent.class);
+            // Un solo topic por key para todos los jobs: el cliente ya sabe a qué
+            // job pertenece cada fragmento y así no hay que suscribirse por job.
+            messaging.convertAndSend(StompAuthInterceptor.topicFor(event.apiKeyId()) + "/tokens", event);
+        } catch (Exception e) {
+            log.warn("Fragmento de tokens ilegible: {}", e.toString());
+        }
+    }
+
     @Configuration
     static class RelaySubscription {
 
         @Bean
         RedisMessageListenerContainer jobEventListenerContainer(RedisConnectionFactory connectionFactory,
                                                                 JobEventRelay relay) {
-            MessageListenerAdapter adapter = new MessageListenerAdapter(relay, "handleMessage");
-            adapter.afterPropertiesSet();
+            MessageListenerAdapter events = new MessageListenerAdapter(relay, "handleMessage");
+            events.afterPropertiesSet();
+            MessageListenerAdapter tokens = new MessageListenerAdapter(relay, "handleTokenMessage");
+            tokens.afterPropertiesSet();
+
             RedisMessageListenerContainer container = new RedisMessageListenerContainer();
             container.setConnectionFactory(connectionFactory);
-            container.addMessageListener(adapter, new ChannelTopic(JobEventBridge.CHANNEL));
+            container.addMessageListener(events, new ChannelTopic(JobEventBridge.CHANNEL));
+            container.addMessageListener(tokens, new ChannelTopic(JobEventBridge.TOKEN_CHANNEL));
             return container;
         }
     }

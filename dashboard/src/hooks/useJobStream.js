@@ -47,6 +47,29 @@ export function useJobStream(apiKey) {
     })
   }, [])
 
+  /**
+   * Los fragmentos pueden llegar desordenados o repetidos (el pub/sub no
+   * garantiza orden), así que se indexan por seq en vez de concatenarse a ciegas.
+   */
+  const appendChunk = useCallback((event) => {
+    setJobs((current) => {
+      const index = current.findIndex((job) => job.id === event.jobId)
+      if (index === -1) return current
+      const next = [...current]
+      const chunks = { ...(next[index].chunks ?? {}), [event.seq]: event.chunk }
+      next[index] = {
+        ...next[index],
+        chunks,
+        streaming: Object.keys(chunks)
+          .map(Number)
+          .sort((a, b) => a - b)
+          .map((seq) => chunks[seq])
+          .join('')
+      }
+      return next
+    })
+  }, [])
+
   const refresh = useCallback(async () => {
     if (!apiKey) return
     try {
@@ -96,6 +119,9 @@ export function useJobStream(apiKey) {
       onConnect: () => {
         setConnected(true)
         client.subscribe(`/topic/keys/${apiKeyId}/jobs`, (message) => upsert(JSON.parse(message.body)))
+        // Fragmentos de la respuesta mientras el modelo la genera. Van por un
+        // topic aparte porque son muchos y no cambian el estado del job.
+        client.subscribe(`/topic/keys/${apiKeyId}/jobs/tokens`, (message) => appendChunk(JSON.parse(message.body)))
       },
       onWebSocketClose: () => setConnected(false),
       onStompError: (frame) => setError(frame.headers?.message ?? 'Error STOMP')
@@ -103,7 +129,7 @@ export function useJobStream(apiKey) {
 
     client.activate()
     return () => client.deactivate()
-  }, [apiKey, apiKeyId, upsert])
+  }, [apiKey, apiKeyId, upsert, appendChunk])
 
   return { jobs, stats, connected, error, refresh, setError }
 }

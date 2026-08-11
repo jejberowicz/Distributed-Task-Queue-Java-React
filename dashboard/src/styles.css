@@ -392,3 +392,17 @@ details summary {
   gap: 6px;
   white-space: nowrap;
 }
+
+.streaming {
+  color: var(--muted);
+}
+
+.streaming::after {
+  content: '▌';
+  color: var(--processing);
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  to { visibility: hidden; }
+}

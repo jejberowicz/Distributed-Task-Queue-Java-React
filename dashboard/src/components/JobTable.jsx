@@ -60,7 +60,15 @@ export function JobTable({ jobs, filter, onFilterChange, onCancel }) {
                 <td>{job.retryCount}</td>
                 <td>{job.tokensUsed ?? '—'}</td>
                 <td className="mono">{job.claimedBy ?? '—'}</td>
-                <td className="result">{job.error ? <span className="err">{job.error}</span> : job.result ?? '—'}</td>
+                <td className="result">
+                  {job.error ? (
+                    <span className="err">{job.error}</span>
+                  ) : (
+                    // Mientras corre se muestra lo que va llegando por streaming;
+                    // el resultado persistido lo reemplaza al completarse.
+                    job.result ?? (job.streaming ? <span className="streaming">{job.streaming}</span> : '—')
+                  )}
+                </td>
                 <td>
                   {CANCELABLE.has(job.status) && (
                     <button className="ghost small" onClick={() => onCancel?.(job.id)}>

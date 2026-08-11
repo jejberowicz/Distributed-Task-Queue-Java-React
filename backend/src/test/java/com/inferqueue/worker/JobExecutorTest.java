@@ -46,7 +46,7 @@ class JobExecutorTest {
         delayedQueue = mock(DelayedQueue.class);
         adapter = mock(ModelAdapter.class);
         executor = new JobExecutor(state, queue, delayedQueue, adapter, TestProperties.defaults(),
-                mock(QueueMetrics.class));
+                mock(QueueMetrics.class), mock(org.springframework.context.ApplicationEventPublisher.class));
     }
 
     private Job pendingJob() {
@@ -69,7 +69,7 @@ class JobExecutorTest {
         Job job = pendingJob();
         when(state.find(job.getId())).thenReturn(Optional.of(job));
         transitionsSucceed(job);
-        when(adapter.infer(any())).thenReturn(new InferenceResult("respuesta", 42));
+        when(adapter.infer(any(), any())).thenReturn(new InferenceResult("respuesta", 42));
 
         executor.process(STREAM, RECORD_ID, QueueMessage.first(job.getId(), Priority.STANDARD), WORKER);
 
@@ -85,7 +85,7 @@ class JobExecutorTest {
         Job job = pendingJob();
         when(state.find(job.getId())).thenReturn(Optional.of(job));
         transitionsSucceed(job);
-        when(adapter.infer(any())).thenThrow(new InferenceException("backend caído", true));
+        when(adapter.infer(any(), any())).thenThrow(new InferenceException("backend caído", true));
 
         QueueMessage message = QueueMessage.first(job.getId(), Priority.STANDARD);
         executor.process(STREAM, RECORD_ID, message, WORKER);
@@ -103,7 +103,7 @@ class JobExecutorTest {
         Job job = pendingJob();
         when(state.find(job.getId())).thenReturn(Optional.of(job));
         transitionsSucceed(job);
-        when(adapter.infer(any())).thenThrow(new InferenceException("sigue fallando", true));
+        when(adapter.infer(any(), any())).thenThrow(new InferenceException("sigue fallando", true));
 
         // maxRetries=3, así que el intento 3 (nextAttempt=4) ya no se reintenta.
         QueueMessage exhausted = new QueueMessage(job.getId(), Priority.STANDARD, 3, System.currentTimeMillis());
@@ -121,7 +121,7 @@ class JobExecutorTest {
         Job job = pendingJob();
         when(state.find(job.getId())).thenReturn(Optional.of(job));
         transitionsSucceed(job);
-        when(adapter.infer(any())).thenThrow(new InferenceException("modelo inexistente", false));
+        when(adapter.infer(any(), any())).thenThrow(new InferenceException("modelo inexistente", false));
 
         executor.process(STREAM, RECORD_ID, QueueMessage.first(job.getId(), Priority.STANDARD), WORKER);
 
@@ -139,7 +139,7 @@ class JobExecutorTest {
 
         executor.process(STREAM, RECORD_ID, QueueMessage.first(job.getId(), Priority.STANDARD), WORKER);
 
-        verify(adapter, never()).infer(any());
+        verify(adapter, never()).infer(any(), any());
         verify(state, never()).markProcessing(any(), anyString(), anyString());
         verify(queue).ack(STREAM, RECORD_ID);
     }
@@ -155,7 +155,7 @@ class JobExecutorTest {
         executor.process(STREAM, RECORD_ID, QueueMessage.first(job.getId(), Priority.STANDARD), WORKER);
 
         verify(state).markExpired(job.getId());
-        verify(adapter, never()).infer(any());
+        verify(adapter, never()).infer(any(), any());
         verify(queue).ack(STREAM, RECORD_ID);
     }
 
@@ -168,7 +168,7 @@ class JobExecutorTest {
         executor.process(STREAM, RECORD_ID, QueueMessage.first(unknown, Priority.STANDARD), WORKER);
 
         verify(queue).ack(STREAM, RECORD_ID);
-        verify(adapter, never()).infer(any());
+        verify(adapter, never()).infer(any(), any());
     }
 
     @Test
@@ -179,7 +179,7 @@ class JobExecutorTest {
         when(state.markProcessing(eq(job.getId()), anyString(), anyString())).thenReturn(Optional.of(job));
         // markDone vacío = la transición no prosperó porque el job ya está terminal.
         when(state.markDone(eq(job.getId()), any(), any())).thenReturn(Optional.empty());
-        when(adapter.infer(any())).thenReturn(new InferenceResult("respuesta tardía", 42));
+        when(adapter.infer(any(), any())).thenReturn(new InferenceResult("respuesta tardía", 42));
 
         executor.process(STREAM, RECORD_ID, QueueMessage.first(job.getId(), Priority.STANDARD), WORKER);
 
@@ -197,7 +197,7 @@ class JobExecutorTest {
 
         executor.process(STREAM, RECORD_ID, QueueMessage.first(job.getId(), Priority.STANDARD), WORKER);
 
-        verify(adapter, never()).infer(any());
+        verify(adapter, never()).infer(any(), any());
         verify(queue).ack(STREAM, RECORD_ID);
     }
 
@@ -208,7 +208,7 @@ class JobExecutorTest {
         when(state.find(job.getId())).thenReturn(Optional.of(job));
         when(state.markProcessing(eq(job.getId()), anyString(), anyString())).thenReturn(Optional.of(job));
         when(state.markRetrying(eq(job.getId()), anyString())).thenReturn(Optional.empty());
-        when(adapter.infer(any())).thenThrow(new InferenceException("backend caído", true));
+        when(adapter.infer(any(), any())).thenThrow(new InferenceException("backend caído", true));
 
         executor.process(STREAM, RECORD_ID, QueueMessage.first(job.getId(), Priority.STANDARD), WORKER);
 

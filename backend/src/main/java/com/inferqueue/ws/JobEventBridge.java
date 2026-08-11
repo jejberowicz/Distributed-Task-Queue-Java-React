@@ -2,6 +2,7 @@ package com.inferqueue.ws;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.inferqueue.domain.JobEvent;
+import com.inferqueue.domain.JobTokenEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
@@ -18,6 +19,7 @@ import org.springframework.stereotype.Component;
 public class JobEventBridge {
 
     public static final String CHANNEL = "jobs:events";
+    public static final String TOKEN_CHANNEL = "jobs:tokens";
 
     private static final Logger log = LoggerFactory.getLogger(JobEventBridge.class);
 
@@ -31,12 +33,21 @@ public class JobEventBridge {
 
     @EventListener
     public void onJobEvent(JobEvent event) {
+        publish(CHANNEL, event, event.jobId());
+    }
+
+    @EventListener
+    public void onTokenEvent(JobTokenEvent event) {
+        publish(TOKEN_CHANNEL, event, event.jobId());
+    }
+
+    private void publish(String channel, Object payload, Object jobId) {
         try {
-            redis.convertAndSend(CHANNEL, objectMapper.writeValueAsString(event));
+            redis.convertAndSend(channel, objectMapper.writeValueAsString(payload));
         } catch (Exception e) {
             // Un fallo publicando no debe romper el procesamiento del job:
             // el dashboard se recupera con el polling de /v1/stats.
-            log.warn("No se pudo publicar el evento del job {}: {}", event.jobId(), e.toString());
+            log.warn("No se pudo publicar en {} el evento del job {}: {}", channel, jobId, e.toString());
         }
     }
 }

@@ -6,7 +6,12 @@ package com.inferqueue.worker;
  */
 public interface ModelAdapter {
 
-    InferenceResult infer(InferenceRequest request) throws InferenceException;
+    /**
+     * Ejecuta la inference emitiendo la respuesta por {@code sink} a medida que
+     * se genera. Un adapter sin streaming puede ignorar el sink: el resultado
+     * completo viaja igual en el {@link InferenceResult} que devuelve.
+     */
+    InferenceResult infer(InferenceRequest request, TokenSink sink) throws InferenceException;
 
     String name();
 }

@@ -15,9 +15,10 @@ import java.util.concurrent.ThreadLocalRandom;
 public class MockAdapter implements ModelAdapter {
 
     private static final double FAILURE_RATE = 0.15;
+    private static final int CHUNK_SIZE = 12;
 
     @Override
-    public InferenceResult infer(InferenceRequest request) {
+    public InferenceResult infer(InferenceRequest request, TokenSink sink) {
         long latencyMillis = switch (request.type()) {
             case EMBEDDING -> ThreadLocalRandom.current().nextLong(150, 600);
             case CLASSIFICATION -> ThreadLocalRandom.current().nextLong(400, 1500);
@@ -43,7 +44,24 @@ public class MockAdapter implements ModelAdapter {
             case CLASSIFICATION -> ThreadLocalRandom.current().nextBoolean() ? "positive" : "negative";
             case COMPLETION -> "[mock:%s] %s".formatted(request.model(), request.prompt().toUpperCase());
         };
+        streamOut(output, sink);
         return new InferenceResult(output, tokens);
+    }
+
+    /**
+     * Escupe la salida de a pedazos con pausas, para que el streaming del
+     * dashboard se pueda ver funcionando sin una GPU del otro lado.
+     */
+    private void streamOut(String output, TokenSink sink) {
+        for (int i = 0; i < output.length(); i += CHUNK_SIZE) {
+            sink.emit(output.substring(i, Math.min(output.length(), i + CHUNK_SIZE)));
+            try {
+                Thread.sleep(40);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
     }
 
     private String fakeEmbedding(String prompt) {

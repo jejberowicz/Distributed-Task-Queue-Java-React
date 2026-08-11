@@ -8,6 +8,7 @@ import com.inferqueue.queue.JobQueue;
 import com.inferqueue.queue.QueueMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.stereotype.Component;
 
@@ -31,15 +32,17 @@ public class JobExecutor {
     private final ModelAdapter adapter;
     private final InferQueueProperties props;
     private final QueueMetrics metrics;
+    private final ApplicationEventPublisher events;
 
     public JobExecutor(JobStateService state, JobQueue queue, DelayedQueue delayedQueue, ModelAdapter adapter,
-                       InferQueueProperties props, QueueMetrics metrics) {
+                       InferQueueProperties props, QueueMetrics metrics, ApplicationEventPublisher events) {
         this.state = state;
         this.queue = queue;
         this.delayedQueue = delayedQueue;
         this.adapter = adapter;
         this.props = props;
         this.metrics = metrics;
+        this.events = events;
     }
 
     public void process(String stream, RecordId recordId, QueueMessage message, String workerId) {
@@ -76,8 +79,12 @@ public class JobExecutor {
         }
 
         long startedAt = System.nanoTime();
+        TokenStream tokens = new TokenStream(job, events);
         try {
-            InferenceResult result = adapter.infer(InferenceRequest.from(job));
+            InferenceResult result = adapter.infer(InferenceRequest.from(job), tokens);
+            // Lo que quedó en el buffer se emite antes del evento de DONE, así el
+            // dashboard no ve el resultado final antes que el último fragmento.
+            tokens.flush();
             // Si volvió vacío es que lo cancelaron durante la inference: el
             // resultado se descarta, el estado del cliente manda.
             if (state.markDone(job.getId(), result.output(), result.tokensUsed()).isPresent()) {
