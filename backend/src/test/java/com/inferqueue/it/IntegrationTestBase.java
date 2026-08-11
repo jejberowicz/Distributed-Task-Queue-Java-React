@@ -24,6 +24,13 @@ import org.testcontainers.utility.DockerImageName;
 @ActiveProfiles("integration")
 public abstract class IntegrationTestBase {
 
+    static {
+        // Antes que cualquier contenedor: tiene que correr antes de que
+        // Testcontainers construya su cliente, y los inicializadores estáticos
+        // se ejecutan en orden de aparición.
+        DockerApiVersion.alignWithDaemon();
+    }
+
     @Container
     @ServiceConnection
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");

@@ -21,9 +21,6 @@
         <java.version>21</java.version>
         <!-- La versión que fija Boot 3.3 (1.19.x) no habla con Docker Engine 29. -->
         <testcontainers.version>1.21.3</testcontainers.version>
-        <!-- docker-java negocia 1.41 por defecto y Docker Engine 29 ya no la
-             acepta. Bajala si tu Docker es anterior a la 25. -->
-        <docker.api.version>1.44</docker.api.version>
     </properties>
 
     <dependencies>
@@ -109,15 +106,6 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <configuration>
-                    <systemPropertyVariables>
-                        <api.version>${docker.api.version}</api.version>
-                    </systemPropertyVariables>
-                </configuration>
             </plugin>
         </plugins>
     </build>
