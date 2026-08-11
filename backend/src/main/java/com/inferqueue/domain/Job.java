@@ -71,6 +71,10 @@ public class Job {
     @Column(name = "canceled_at")
     private Instant canceledAt;
 
+    /** Header Idempotency-Key del submit, si el cliente mandó uno. */
+    @Column(name = "idempotency_key")
+    private String idempotencyKey;
+
     protected Job() {
     }
 
@@ -210,5 +214,13 @@ public class Job {
 
     public Instant getCanceledAt() {
         return canceledAt;
+    }
+
+    public String getIdempotencyKey() {
+        return idempotencyKey;
+    }
+
+    public void setIdempotencyKey(String idempotencyKey) {
+        this.idempotencyKey = idempotencyKey;
     }
 }

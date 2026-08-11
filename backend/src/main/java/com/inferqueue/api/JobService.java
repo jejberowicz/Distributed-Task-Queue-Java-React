@@ -9,11 +9,10 @@ import com.inferqueue.domain.JobStatus;
 import com.inferqueue.domain.JobType;
 import com.inferqueue.domain.Priority;
 import com.inferqueue.queue.DelayedQueue;
-import com.inferqueue.queue.JobQueue;
-import com.inferqueue.queue.QueueMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -34,27 +33,54 @@ public class JobService {
     private static final Logger log = LoggerFactory.getLogger(JobService.class);
 
     private final JobRepository jobs;
-    private final JobQueue queue;
+    private final JobWriter writer;
     private final DelayedQueue delayedQueue;
     private final InferQueueProperties props;
     private final ApplicationEventPublisher events;
 
-    public JobService(JobRepository jobs, JobQueue queue, DelayedQueue delayedQueue, InferQueueProperties props,
+    public JobService(JobRepository jobs, JobWriter writer, DelayedQueue delayedQueue, InferQueueProperties props,
                       ApplicationEventPublisher events) {
         this.jobs = jobs;
-        this.queue = queue;
+        this.writer = writer;
         this.delayedQueue = delayedQueue;
         this.props = props;
         this.events = events;
     }
 
     /**
-     * Persiste el job y recién después lo encola. El orden importa: si encoláramos
-     * primero, un worker rápido podría buscar en la base un job que todavía no
-     * está commiteado. Por eso el XADD se difiere al commit de la transacción.
+     * Encola un job. Con un Idempotency-Key, un reintento del cliente (timeout de
+     * red, retry automático de su SDK) devuelve el job original en vez de encolar
+     * uno nuevo: la deduplicación se apoya en el índice único (api_key_id, key),
+     * no en un chequeo previo, así dos requests simultáneos tampoco duplican.
      */
-    @Transactional
-    public Job submit(ApiKey apiKey, SubmitJobRequest request) {
+    public Submission submit(ApiKey apiKey, SubmitJobRequest request, String idempotencyKey) {
+        if (idempotencyKey != null) {
+            Optional<Job> existing = writer.findByIdempotencyKey(apiKey.getId(), idempotencyKey);
+            if (existing.isPresent()) {
+                log.info("Idempotency-Key '{}' ya conocido: devuelvo el job {}", idempotencyKey,
+                        existing.get().getId());
+                return new Submission(existing.get(), true);
+            }
+        }
+
+        try {
+            Job saved = writer.insert(build(apiKey, request, idempotencyKey));
+            log.info("Job {} aceptado (model={}, priority={})", saved.getId(), saved.getModel(),
+                    saved.getPriority());
+            return new Submission(saved, false);
+        } catch (DataIntegrityViolationException e) {
+            // Otro request con el mismo Idempotency-Key ganó la carrera por el
+            // índice único. El suyo es el job válido; el nuestro nunca existió.
+            if (idempotencyKey == null) {
+                throw e;
+            }
+            return writer.findByIdempotencyKey(apiKey.getId(), idempotencyKey)
+                    .map(job -> new Submission(job, true))
+                    .orElseThrow(() -> e);
+        }
+    }
+
+    private Job build(ApiKey apiKey, SubmitJobRequest request, String idempotencyKey) {
         Priority priority = request.priority() != null ? request.priority() : apiKey.getTier().defaultPriority();
         Duration ttl = request.ttlSeconds() != null
                 ? Duration.ofSeconds(request.ttlSeconds())
@@ -67,15 +93,12 @@ public class JobService {
                 request.prompt(),
                 priority,
                 Instant.now().plus(ttl));
-        Job saved = jobs.save(job);
+        job.setIdempotencyKey(idempotencyKey);
+        return job;
+    }
 
-        afterCommit(() -> {
-            queue.enqueue(QueueMessage.first(saved.getId(), priority));
-            events.publishEvent(JobEvent.of(saved));
-        });
-        log.info("Job {} aceptado (model={}, priority={}, ttl={}s)", saved.getId(), saved.getModel(), priority,
-                ttl.toSeconds());
-        return saved;
+    /** {@code replayed} distingue un job recién creado de uno devuelto por idempotencia. */
+    public record Submission(Job job, boolean replayed) {
     }
 
     @Transactional(readOnly = true)

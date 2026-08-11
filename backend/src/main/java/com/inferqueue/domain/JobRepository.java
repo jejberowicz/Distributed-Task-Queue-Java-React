@@ -24,6 +24,8 @@ public interface JobRepository extends JpaRepository<Job, UUID> {
     @Query("select j from Job j where j.id = :id")
     Optional<Job> findByIdForUpdate(@Param("id") UUID id);
 
+    Optional<Job> findByApiKeyIdAndIdempotencyKey(UUID apiKeyId, String idempotencyKey);
+
     Page<Job> findByApiKeyIdOrderByCreatedAtDesc(UUID apiKeyId, Pageable pageable);
 
     Page<Job> findByApiKeyIdAndStatusOrderByCreatedAtDesc(UUID apiKeyId, JobStatus status, Pageable pageable);

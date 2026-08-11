@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -24,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static org.springframework.http.HttpStatus.BAD_REQUEST;
 import static org.springframework.http.HttpStatus.CONFLICT;
 import static org.springframework.http.HttpStatus.FORBIDDEN;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
@@ -32,17 +34,41 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
 @RequestMapping("/v1/jobs")
 public class JobController {
 
+    private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 255;
+
     private final JobService jobService;
 
     public JobController(JobService jobService) {
         this.jobService = jobService;
     }
 
+    /**
+     * Encola un job. Con {@code Idempotency-Key}, repetir el mismo request
+     * devuelve 200 con el job original en vez de 201 con uno nuevo, así el
+     * cliente puede reintentar un timeout sin duplicar trabajo de inference.
+     */
     @PostMapping
     public ResponseEntity<JobResponse> submit(@CurrentApiKey ApiKey apiKey,
+                                              @RequestHeader(value = "Idempotency-Key", required = false)
+                                              String idempotencyKey,
                                               @Valid @RequestBody SubmitJobRequest request) {
-        Job job = jobService.submit(apiKey, request);
-        return ResponseEntity.created(URI.create("/v1/jobs/" + job.getId())).body(JobResponse.from(job));
+        JobService.Submission submission = jobService.submit(apiKey, request, normalize(idempotencyKey));
+        JobResponse body = JobResponse.from(submission.job());
+        return submission.replayed()
+                ? ResponseEntity.ok(body)
+                : ResponseEntity.created(URI.create("/v1/jobs/" + body.id())).body(body);
+    }
+
+    private String normalize(String header) {
+        if (header == null || header.isBlank()) {
+            return null;
+        }
+        String trimmed = header.trim();
+        if (trimmed.length() > MAX_IDEMPOTENCY_KEY_LENGTH) {
+            throw new ResponseStatusException(BAD_REQUEST,
+                    "Idempotency-Key no puede superar los " + MAX_IDEMPOTENCY_KEY_LENGTH + " caracteres");
+        }
+        return trimmed;
     }
 
     @GetMapping("/{id}")
