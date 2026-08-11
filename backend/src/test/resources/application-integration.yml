@@ -1,0 +1,21 @@
+# Todo comprimido: lo que en producción son minutos, acá tiene que pasar en
+# segundos para que el test no dependa de esperar de verdad.
+inferqueue:
+  queue:
+    claim-idle-timeout: 1s
+    reclaim-interval: PT1S
+    retry-backoff-base: 200ms
+    retry-backoff-max: 1s
+    max-retries: 2
+    default-ttl: 5m
+  worker:
+    poll-timeout: 200ms
+    concurrency: 2
+  ollama:
+    # Ni mock ni ollama: el adapter lo pone cada test para controlar qué falla.
+    adapter: none
+
+logging:
+  level:
+    com.inferqueue: INFO
+    org.testcontainers: WARN
