@@ -136,6 +136,25 @@ public class Job {
         this.completedAt = this.canceledAt;
     }
 
+    /**
+     * Vuelve a poner en cola un job que había muerto. Es la única transición que
+     * saca a un job de un estado terminal, y es deliberada: la hace un operador
+     * desde la DLQ, no el sistema solo. El contador de reintentos se reinicia
+     * (si no, el job volvería a morir en el primer fallo) y el TTL se renueva,
+     * porque el original ya venció hace rato.
+     */
+    public void requeue(Instant expiresAt) {
+        this.status = JobStatus.QUEUED;
+        this.error = null;
+        this.result = null;
+        this.retryCount = 0;
+        this.claimedBy = null;
+        this.streamMsgId = null;
+        this.startedAt = null;
+        this.completedAt = null;
+        this.expiresAt = expiresAt;
+    }
+
     public boolean isExpired(Instant now) {
         return now.isAfter(expiresAt);
     }

@@ -18,6 +18,7 @@ import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.core.StreamOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.domain.Range;
+import org.springframework.data.redis.connection.Limit;
 import org.springframework.data.redis.connection.RedisStreamCommands.XClaimOptions;
 import org.springframework.stereotype.Component;
 
@@ -25,6 +26,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Wrapper sobre Redis Streams. Dos streams (prioridad y standard) comparten un
@@ -157,6 +159,46 @@ public class JobQueue {
         payload.put("deadAt", Long.toString(System.currentTimeMillis()));
         ops().add(StreamRecords.mapBacked(payload).withStreamKey(props.queue().dlqStream()));
         log.error("Job {} enviado a la DLQ tras {} intentos: {}", message.jobId(), message.attempt(), reason);
+    }
+
+    /** Contenido de la DLQ, del más viejo al más nuevo. Para inspección desde admin. */
+    public List<DeadLetterEntry> deadLetters(int limit) {
+        List<MapRecord<String, String, String>> records =
+                ops().range(props.queue().dlqStream(), Range.unbounded(), Limit.limit().count(limit));
+        return records == null ? List.of() : records.stream().map(DeadLetterEntry::from).toList();
+    }
+
+    public Optional<DeadLetterEntry> deadLetter(String recordId) {
+        List<MapRecord<String, String, String>> records =
+                ops().range(props.queue().dlqStream(), Range.closed(recordId, recordId));
+        return records == null || records.isEmpty()
+                ? Optional.empty()
+                : Optional.of(DeadLetterEntry.from(records.get(0)));
+    }
+
+    public boolean removeDeadLetter(String recordId) {
+        Long removed = ops().delete(props.queue().dlqStream(), RecordId.of(recordId));
+        return removed != null && removed > 0;
+    }
+
+    /** Vacía la DLQ. Devuelve cuántas entradas se descartaron. */
+    public long purgeDeadLetters() {
+        Long size = ops().size(props.queue().dlqStream());
+        redis.delete(props.queue().dlqStream());
+        return size == null ? 0 : size;
+    }
+
+    /**
+     * Recorta los streams a un máximo aproximado de entradas. Los mensajes se
+     * borran al ackearse, pero un ack perdido o un XADD sin consumir dejan
+     * residuo; sin esto el stream crece para siempre.
+     *
+     * <p>El límite es aproximado a propósito (~): XTRIM exacto obliga a Redis a
+     * recorrer nodos parciales del radix tree, y acá no necesitamos precisión.
+     */
+    public long trim(String stream, long maxLength) {
+        Long remaining = ops().trim(stream, maxLength, true);
+        return remaining == null ? 0 : remaining;
     }
 
     public long depth(Priority priority) {
