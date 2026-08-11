@@ -49,6 +49,12 @@ inferqueue:
     retry-backoff-base: 2s
     retry-backoff-max: 5m
     default-ttl: 30m
+    retention:
+      # Muy por encima del backlog esperable: si un stream llega acá, el problema
+      # es que los workers no dan abasto, no la retención.
+      max-stream-length: 100000
+      max-dlq-length: 10000
+      trim-interval: 5m
   worker:
     enabled: ${WORKER_ENABLED:true}
     concurrency: ${WORKER_CONCURRENCY:4}

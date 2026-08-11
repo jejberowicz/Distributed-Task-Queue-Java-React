@@ -22,11 +22,20 @@ public record InferQueueProperties(
             int maxRetries,
             Duration retryBackoffBase,
             Duration retryBackoffMax,
-            Duration defaultTtl
+            Duration defaultTtl,
+            Retention retention
     ) {
     }
 
     public record Streams(String priority, String standard) {
+    }
+
+    /**
+     * Techo de entradas por stream. Los mensajes se borran al ackearse, pero un
+     * ack perdido o un XADD que nunca se consumió dejan residuo que no se limpia
+     * solo; el trim es la red de contención para que Redis no crezca sin fin.
+     */
+    public record Retention(long maxStreamLength, long maxDlqLength, Duration trimInterval) {
     }
 
     /** enabled=false deja la instancia como gateway puro: expone la API pero no consume la cola. */
