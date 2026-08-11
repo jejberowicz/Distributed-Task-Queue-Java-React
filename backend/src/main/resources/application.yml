@@ -41,7 +41,9 @@ inferqueue:
     # Un job sin XACK por más de este tiempo se considera huérfano (worker muerto)
     # y es reclamado con XCLAIM por otro worker.
     claim-idle-timeout: 60s
-    reclaim-interval: 15s
+    # En formato ISO-8601 porque además de bindearse como Duration alimenta el
+    # fixedDelayString de @Scheduled, que sólo acepta ISO-8601 o un número plano.
+    reclaim-interval: PT15S
     # Cuántos mensajes reclama como máximo cada pasada del reclaimer.
     reclaim-batch-size: 32
     max-retries: 3
@@ -54,7 +56,7 @@ inferqueue:
       # es que los workers no dan abasto, no la retención.
       max-stream-length: 100000
       max-dlq-length: 10000
-      trim-interval: 5m
+      trim-interval: PT5M
   worker:
     enabled: ${WORKER_ENABLED:true}
     concurrency: ${WORKER_CONCURRENCY:4}
