@@ -41,7 +41,8 @@ Tres piezas independientes:
 
 **Gateway** — autentica por API key (SHA-256 en Postgres, nunca el key en claro), aplica rate limit
 por tier con un contador en Redis, y encola con prioridad: los clientes premium van a
-`infer:priority`, los free a `infer:standard`. También mantiene los WebSockets del dashboard.
+`infer:priority`, los free a `infer:standard`. También mantiene los WebSockets del dashboard, que
+se autentican en el frame CONNECT y quedan acotados al topic de su propia key.
 
 **Redis Streams** — consumer group `inferqueue-workers` sobre ambos streams. `XREADGROUP` deja el
 mensaje en el Pending Entry List (PEL) del consumer hasta que hace `XACK`; ahí está el
@@ -49,7 +50,8 @@ at-least-once. Un stream aparte (`infer:dlq`) recibe lo que agotó reintentos.
 
 **Workers** — un virtual thread por worker, cada uno con su propio consumer name. Hablan con el
 modelo detrás de la interfaz `ModelAdapter`, que tiene dos implementaciones: `OllamaAdapter` (HTTP
-contra Ollama) y `MockAdapter` (latencia y fallos simulados, para desarrollo y demos sin GPU).
+contra Ollama) y `MockAdapter` (latencia y fallos simulados, para desarrollo y demos sin GPU). La
+respuesta se emite token a token mientras se genera, así el dashboard la ve escribiéndose.
 
 ---
 
@@ -71,7 +73,15 @@ curl -s -X POST localhost:8080/admin/api-keys \
 
 curl -s -X POST localhost:8080/v1/jobs \
   -H 'Authorization: Bearer iq_…' -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: mi-request-1' \
   -d '{"model":"llama3","type":"COMPLETION","prompt":"explicá XCLAIM","ttlSeconds":300}'
+```
+
+Cancelarlo, o mirar qué murió en la DLQ:
+
+```bash
+curl -s -X DELETE localhost:8080/v1/jobs/{id} -H 'Authorization: Bearer iq_…'
+curl -s localhost:8080/admin/dlq -H 'X-Admin-Token: dev-admin-token'
 ```
 
 Para usar inference real contra el Ollama del host: `MODEL_ADAPTER=ollama docker compose up`.
@@ -84,12 +94,21 @@ Sin Docker: `cd backend && mvn spring-boot:run` (necesita Postgres y Redis local
 | Método | Endpoint | Descripción |
 |---|---|---|
 | `POST` | `/v1/jobs` | Encola un job (`model`, `type`, `prompt`, `priority?`, `ttlSeconds?`) |
+| `POST` | `/v1/jobs/batch` | Encola hasta 100 jobs en una transacción |
 | `GET` | `/v1/jobs/{id}` | Estado y resultado de un job |
+| `DELETE` | `/v1/jobs/{id}` | Cancela un job que todavía no terminó |
 | `GET` | `/v1/jobs?status=&page=&size=` | Listado propio de la API key, paginado |
 | `GET` | `/v1/jobs/usage` | Tokens consumidos en los últimos 30 días |
 | `GET` | `/v1/stats` | Conteos por estado, profundidad de streams, PEL, DLQ |
 | `POST` | `/admin/api-keys` | Emite una API key (requiere `X-Admin-Token`) |
-| STOMP | `/ws` → `/topic/jobs` | Eventos de cambio de estado en vivo |
+| `GET` | `/admin/dlq` | Jobs muertos con su motivo e intentos |
+| `POST` | `/admin/dlq/{recordId}/requeue` | Devuelve un job muerto a la cola |
+| `DELETE` | `/admin/dlq/{recordId}` · `/admin/dlq` | Descarta una entrada o vacía la DLQ |
+| STOMP | `/ws` → `/topic/keys/{apiKeyId}/jobs` | Eventos de estado en vivo |
+| STOMP | `/ws` → `/topic/keys/{apiKeyId}/jobs/tokens` | Respuesta en streaming, fragmento a fragmento |
+
+Los dos endpoints de submit aceptan `Idempotency-Key`: repetir el request devuelve `200` con el job
+original en vez de `201` con uno nuevo.
 
 Métricas Prometheus en `/actuator/prometheus`: jobs completados, reintentados, muertos, expirados,
 reclamados por XCLAIM, y latencia de inference.
@@ -158,6 +177,63 @@ del `ZREM` como candado: si hay varias instancias corriendo el scheduler, sólo 
 remove encola. El backoff es `2s · 2^intento` con techo de 5 minutos, y a los 3 reintentos el job
 va a la DLQ con el motivo del descarte.
 
+### ¿Cómo se cancela un job que ya está en la cola?
+
+No se cancela el mensaje: no hay forma de sacar una entrada ya escrita en un stream de Redis. La
+cancelación es un estado en Postgres y el mensaje sigue su curso hasta que un worker lo toma y lo
+descarta por estado terminal.
+
+Lo interesante es la carrera contra el worker que ya lo está ejecutando. Todas las transiciones de
+estado pasan por `SELECT ... FOR UPDATE` y abortan si el job ya está terminal, así que un worker que
+termina su inference después de la cancelación descarta el resultado en vez de pisar el `CANCELED`
+con un `DONE`. El retry sigue la misma regla: si la transición no prospera, no se programa.
+
+Lo único que sí se limpia de verdad son los retries que todavía están esperando en el ZSET diferido,
+porque esos todavía no llegaron al stream.
+
+### ¿Cómo se evita cobrar dos veces la misma inference?
+
+Con `Idempotency-Key`, apoyado en un índice único parcial `(api_key_id, idempotency_key)` y no en un
+`SELECT` previo. La diferencia importa: dos requests simultáneos con la misma clave chocan contra el
+índice, y el que pierde relee el job del ganador en vez de crear un duplicado. Por eso el insert
+vive en un bean aparte — la violación de integridad recién aparece al commitear, y para capturarla
+hay que cruzar el proxy transaccional.
+
+El batch deriva una clave por ítem (`clave#indice`) y reusa el mismo índice. Además entra en una
+sola transacción, así que un batch que falló no dejó nada encolado y reintentarlo es seguro sin más
+ceremonia.
+
+### ¿Por qué el WebSocket se autentica en el CONNECT y no en el handshake?
+
+Porque el handshake HTTP del WebSocket no lleva el header `Authorization` en todos los clientes — el
+navegador no deja setear headers en `new WebSocket()`. La credencial viaja entonces en el frame
+CONNECT de STOMP, se resuelve contra `ApiKeyService` y queda como `Principal` de la sesión.
+
+Cada SUBSCRIBE se compara contra ese principal: sólo se entra a `/topic/keys/{propia-key}/**`. Antes
+el topic era global y el filtrado lo hacía el cliente, que es lo mismo que decir que no había
+filtrado.
+
+### ¿Por qué hay retención por XTRIM si los mensajes ya se borran al ackear?
+
+Porque el camino feliz no es el único. Un ack perdido, un `XADD` que nunca se consumió o un consumer
+group borrado dejan entradas que nadie va a sacar, y Redis crece hasta quedarse sin memoria.
+
+El detalle a tener presente es que `XTRIM MAXLEN` descarta las entradas **más viejas**, que en un
+stream de trabajo son justamente las que todavía no se procesaron. Por eso el techo se configura muy
+por encima del backlog esperable y cada recorte efectivo se loguea como warning: si el trimmer está
+recortando de verdad, el problema es que los workers no dan abasto.
+
+### ¿Por qué el streaming de tokens va por un canal aparte?
+
+Los fragmentos son muchos, son efímeros y perder uno no cambia nada — el resultado definitivo
+siempre llega en el evento de `DONE`. Mezclarlos con los eventos de estado obligaría a tratarlos con
+la misma seriedad que a una transición de estado, y no la merecen.
+
+Aun así, emitir un mensaje de pub/sub por token inunda Redis sin que se note en pantalla, así que
+`TokenStream` los acumula y los suelta por tamaño (48 caracteres) o por tiempo (250ms). Cada
+fragmento lleva su `seq` y el cliente los indexa por número: el pub/sub no garantiza orden y
+concatenar a ciegas mostraría la respuesta mezclada.
+
 ### ¿Por qué Ollama y no la API de OpenAI?
 
 Costo cero en desarrollo, reproducible sin credenciales, y corre contra la GPU local. La interfaz
@@ -186,18 +262,30 @@ recupera con el polling de `/v1/stats`.
 - El broker STOMP es en memoria; el fan-out escala hasta donde escale una instancia del gateway.
 - El rate limit usa ventana fija, así que admite hasta 2x el límite en el borde entre ventanas. Con
   sliding window log el costo por request sube y no valía la pena acá.
-- `/topic/jobs` es global y el filtrado por API key se hace en el cliente: sirve para el dashboard
-  propio, no para multi-tenant real. La versión seria necesita autenticación en el CONNECT de STOMP
-  y un topic por key.
-- Los streams se limpian borrando el mensaje después del ack; no hay `XTRIM` por retención.
+- La cancelación no interrumpe la inference en curso: el worker la termina y descarta el resultado.
+  Cortarla de verdad necesita que el `ModelAdapter` exponga cancelación, y Ollama no la tiene.
+- El token de admin es uno solo y compartido para todo `/admin`. Alcanza para operar, no para
+  auditar quién hizo qué.
+- Los fragmentos de streaming no se persisten: si el dashboard se conecta a mitad de un job, ve el
+  resultado recién al completarse.
 
 ## Tests
 
 ```bash
-cd backend && mvn test
+cd backend && mvn test          # necesita Docker: los de integración levantan Postgres y Redis
 ```
 
-17 tests sobre lo que puede romperse de verdad: reentrega de un job terminal tratada como no-op,
-ack antes de reprogramar el retry, corte a la DLQ al agotar intentos o ante un error no
-reintentable, job vencido que no se ejecuta, curva de backoff con su techo, y que el key en claro
-nunca se persiste.
+56 tests, en dos niveles.
+
+**Unitarios** — la lógica que puede romperse sin infraestructura: reentrega de un job terminal
+tratada como no-op, ack antes de reprogramar el retry, corte a la DLQ al agotar intentos o ante un
+error no reintentable, job vencido que no se ejecuta, resultado descartado cuando el job se canceló
+en pleno vuelo, curva de backoff con su techo, deduplicación por Idempotency-Key, autorización de
+las suscripciones STOMP, y que el key en claro nunca se persiste.
+
+**Integración con Testcontainers** — lo que no se puede testear con mocks sin terminar testeando el
+mock: qué queda en el PEL de un consumer group, qué reclama `XCLAIM` y cuándo, si el índice único de
+idempotencia frena de verdad ocho submits simultáneos, si el `SELECT ... FOR UPDATE` serializa las
+transiciones. Incluye el escenario central del proyecto: un mensaje entregado y nunca ackeado —
+exactamente lo que deja un worker que muere a mitad de un job — que no se puede reclamar antes del
+idle timeout y que después levanta otro worker.
