@@ -28,16 +28,25 @@ public class RateLimiter {
     }
 
     public Decision check(UUID apiKeyId, Tier tier) {
+        return consume(apiKeyId, tier, 1);
+    }
+
+    /**
+     * Consume {@code cost} unidades de la ventana. El costo existe por el submit
+     * en lote: un request que encola 100 jobs no puede contar igual que uno que
+     * encola uno solo, o el límite por tier deja de significar algo.
+     */
+    public Decision consume(UUID apiKeyId, Tier tier, int cost) {
         int limit = limitFor(tier);
         long windowStart = Instant.now().getEpochSecond() / WINDOW.toSeconds();
         String key = "ratelimit:%s:%d".formatted(apiKeyId, windowStart);
 
-        Long count = redis.opsForValue().increment(key);
-        if (count != null && count == 1L) {
+        Long count = redis.opsForValue().increment(key, cost);
+        if (count != null && count == cost) {
             // Primer hit de la ventana: le ponemos TTL para que se limpie sola.
             redis.expire(key, WINDOW);
         }
-        long used = count == null ? 1L : count;
+        long used = count == null ? cost : count;
         long remaining = Math.max(0, limit - used);
         return new Decision(used <= limit, limit, remaining, (windowStart + 1) * WINDOW.toSeconds());
     }

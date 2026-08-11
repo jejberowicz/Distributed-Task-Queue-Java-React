@@ -11,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -38,6 +39,11 @@ class JobWriter {
     @Transactional(readOnly = true)
     Optional<Job> findByIdempotencyKey(UUID apiKeyId, String idempotencyKey) {
         return jobs.findByApiKeyIdAndIdempotencyKey(apiKeyId, idempotencyKey);
+    }
+
+    @Transactional(readOnly = true)
+    List<Job> findByIdempotencyKeys(UUID apiKeyId, Collection<String> keys) {
+        return jobs.findByApiKeyIdAndIdempotencyKeyInOrderByIdempotencyKey(apiKeyId, keys);
     }
 
     /**

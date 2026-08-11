@@ -22,7 +22,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -80,6 +82,60 @@ public class JobService {
         }
     }
 
+    /**
+     * Encola un lote en una sola transacción: o entran todos los jobs o no entra
+     * ninguno. Eso hace que reintentar un batch que falló sea seguro sin más
+     * ceremonia — si falló, no quedó nada encolado.
+     *
+     * <p>Para el caso en que el batch sí entró pero se perdió la respuesta, el
+     * Idempotency-Key del lote se deriva por ítem ({@code clave#indice}), así la
+     * deduplicación reusa el mismo índice único que el submit individual.
+     */
+    public BatchSubmission submitBatch(ApiKey apiKey, BatchSubmitRequest request, String idempotencyKey) {
+        List<String> derivedKeys = derivedKeys(idempotencyKey, request.jobs().size());
+
+        if (idempotencyKey != null) {
+            List<Job> existing = writer.findByIdempotencyKeys(apiKey.getId(), derivedKeys);
+            if (!existing.isEmpty()) {
+                log.info("Batch con Idempotency-Key '{}' ya conocido: devuelvo {} jobs", idempotencyKey,
+                        existing.size());
+                return new BatchSubmission(existing, true);
+            }
+        }
+
+        List<Job> batch = new ArrayList<>(request.jobs().size());
+        for (int i = 0; i < request.jobs().size(); i++) {
+            batch.add(build(apiKey, request.jobs().get(i), derivedKeys == null ? null : derivedKeys.get(i)));
+        }
+
+        try {
+            List<Job> saved = writer.insertAll(batch);
+            log.info("Batch de {} jobs aceptado para la key {}", saved.size(), apiKey.getId());
+            return new BatchSubmission(saved, false);
+        } catch (DataIntegrityViolationException e) {
+            if (idempotencyKey == null) {
+                throw e;
+            }
+            List<Job> winner = writer.findByIdempotencyKeys(apiKey.getId(), derivedKeys);
+            if (winner.isEmpty()) {
+                throw e;
+            }
+            return new BatchSubmission(winner, true);
+        }
+    }
+
+    /** Un key por ítem derivado del key del lote, para reusar el índice único por job. */
+    private List<String> derivedKeys(String idempotencyKey, int size) {
+        if (idempotencyKey == null) {
+            return null;
+        }
+        List<String> keys = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            keys.add(idempotencyKey + "#" + i);
+        }
+        return keys;
+    }
+
     private Job build(ApiKey apiKey, SubmitJobRequest request, String idempotencyKey) {
         Priority priority = request.priority() != null ? request.priority() : apiKey.getTier().defaultPriority();
         Duration ttl = request.ttlSeconds() != null
@@ -99,6 +155,9 @@ public class JobService {
 
     /** {@code replayed} distingue un job recién creado de uno devuelto por idempotencia. */
     public record Submission(Job job, boolean replayed) {
+    }
+
+    public record BatchSubmission(List<Job> jobs, boolean replayed) {
     }
 
     @Transactional(readOnly = true)

@@ -4,6 +4,7 @@ import com.inferqueue.domain.ApiKey;
 import com.inferqueue.domain.Job;
 import com.inferqueue.domain.JobStatus;
 import com.inferqueue.security.CurrentApiKey;
+import com.inferqueue.security.RateLimiter;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
@@ -26,9 +27,11 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
+import static org.springframework.http.HttpStatus.CREATED;
 import static org.springframework.http.HttpStatus.CONFLICT;
 import static org.springframework.http.HttpStatus.FORBIDDEN;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
+import static org.springframework.http.HttpStatus.TOO_MANY_REQUESTS;
 
 @RestController
 @RequestMapping("/v1/jobs")
@@ -37,9 +40,11 @@ public class JobController {
     private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 
     private final JobService jobService;
+    private final RateLimiter rateLimiter;
 
-    public JobController(JobService jobService) {
+    public JobController(JobService jobService, RateLimiter rateLimiter) {
         this.jobService = jobService;
+        this.rateLimiter = rateLimiter;
     }
 
     /**
@@ -57,6 +62,32 @@ public class JobController {
         return submission.replayed()
                 ? ResponseEntity.ok(body)
                 : ResponseEntity.created(URI.create("/v1/jobs/" + body.id())).body(body);
+    }
+
+    /**
+     * Encola un lote en una sola transacción. El filtro ya cobró una unidad de
+     * rate limit por el request; acá se cobran las restantes, porque encolar 100
+     * jobs no puede costar lo mismo que encolar uno.
+     */
+    @PostMapping("/batch")
+    public ResponseEntity<Map<String, Object>> submitBatch(@CurrentApiKey ApiKey apiKey,
+                                                           @RequestHeader(value = "Idempotency-Key", required = false)
+                                                           String idempotencyKey,
+                                                           @Valid @RequestBody BatchSubmitRequest request) {
+        RateLimiter.Decision decision = rateLimiter.consume(apiKey.getId(), apiKey.getTier(),
+                request.jobs().size() - 1);
+        if (!decision.allowed()) {
+            throw new ResponseStatusException(TOO_MANY_REQUESTS,
+                    "El lote de " + request.jobs().size() + " jobs excede el rate limit del tier "
+                            + apiKey.getTier());
+        }
+
+        JobService.BatchSubmission submission = jobService.submitBatch(apiKey, request, normalize(idempotencyKey));
+        Map<String, Object> body = Map.of(
+                "items", submission.jobs().stream().map(JobResponse::from).toList(),
+                "count", submission.jobs().size(),
+                "replayed", submission.replayed());
+        return submission.replayed() ? ResponseEntity.ok(body) : ResponseEntity.status(CREATED).body(body);
     }
 
     private String normalize(String header) {

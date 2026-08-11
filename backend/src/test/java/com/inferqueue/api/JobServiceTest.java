@@ -16,6 +16,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -99,6 +100,49 @@ class JobServiceTest {
 
         assertThatThrownBy(() -> service.submit(apiKey, request, null))
                 .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    @DisplayName("el batch entra en un solo insert y deriva un Idempotency-Key por ítem")
+    void batchDerivesOneKeyPerItem() {
+        when(writer.findByIdempotencyKeys(any(), any())).thenReturn(List.of());
+        when(writer.insertAll(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        JobService.BatchSubmission submission = service.submitBatch(apiKey,
+                new BatchSubmitRequest(List.of(request, request, request)), IDEMPOTENCY_KEY);
+
+        assertThat(submission.replayed()).isFalse();
+        assertThat(submission.jobs()).hasSize(3);
+        assertThat(submission.jobs()).extracting(Job::getIdempotencyKey)
+                .containsExactly(IDEMPOTENCY_KEY + "#0", IDEMPOTENCY_KEY + "#1", IDEMPOTENCY_KEY + "#2");
+    }
+
+    @Test
+    @DisplayName("reintentar un batch ya aceptado devuelve los mismos jobs sin encolar de nuevo")
+    void repeatedBatchReplaysOriginalJobs() {
+        List<Job> original = List.of(existingJob(), existingJob());
+        when(writer.findByIdempotencyKeys(any(), any())).thenReturn(original);
+
+        JobService.BatchSubmission submission = service.submitBatch(apiKey,
+                new BatchSubmitRequest(List.of(request, request)), IDEMPOTENCY_KEY);
+
+        assertThat(submission.replayed()).isTrue();
+        assertThat(submission.jobs()).isEqualTo(original);
+        verify(writer, never()).insertAll(any());
+    }
+
+    @Test
+    @DisplayName("un batch sin Idempotency-Key no consulta por claves derivadas")
+    void batchWithoutKeyGoesStraightToInsert() {
+        when(writer.insertAll(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        JobService.BatchSubmission submission = service.submitBatch(apiKey,
+                new BatchSubmitRequest(List.of(request)), null);
+
+        assertThat(submission.replayed()).isFalse();
+        assertThat(submission.jobs()).singleElement()
+                .extracting(Job::getIdempotencyKey).isNull();
+        verify(writer, never()).findByIdempotencyKeys(any(), any());
     }
 
     @Test
