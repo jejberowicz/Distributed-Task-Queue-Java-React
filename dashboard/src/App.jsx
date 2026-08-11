@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ApiKeyGate } from './components/ApiKeyGate'
+import { DeadLetterPanel } from './components/DeadLetterPanel'
 import { JobTable } from './components/JobTable'
 import { StatsBar } from './components/StatsBar'
 import { SubmitForm } from './components/SubmitForm'
@@ -63,6 +64,7 @@ export default function App() {
       <StatsBar stats={stats} />
       <SubmitForm apiKey={apiKey} onSubmitted={refresh} onError={setError} />
       <JobTable jobs={jobs} filter={filter} onFilterChange={setFilter} onCancel={cancel} />
+      <DeadLetterPanel depth={stats?.streams?.deadLetterDepth} onChanged={refresh} />
     </div>
   )
 }

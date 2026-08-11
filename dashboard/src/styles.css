@@ -363,3 +363,32 @@ details summary {
   color: var(--muted);
   font-size: 13px;
 }
+
+.dlq {
+  margin-top: 24px;
+}
+
+.dlq-count {
+  font-size: 13px;
+  color: var(--dead);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 1px 8px;
+  vertical-align: middle;
+}
+
+.admin-token {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 320px;
+  margin: 12px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.dlq-actions {
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
+}

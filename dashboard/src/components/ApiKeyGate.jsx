@@ -1,10 +1,10 @@
 import { useState } from 'react'
-import { api } from '../api/client'
+import { api, storeAdminToken, storedAdminToken } from '../api/client'
 
 /** Pantalla inicial: pegar una API key existente o emitir una nueva con el token de admin. */
 export function ApiKeyGate({ onReady }) {
   const [key, setKey] = useState('')
-  const [adminToken, setAdminToken] = useState('dev-admin-token')
+  const [adminToken, setAdminToken] = useState(storedAdminToken() || 'dev-admin-token')
   const [tier, setTier] = useState('PREMIUM')
   const [issued, setIssued] = useState(null)
   const [error, setError] = useState(null)
@@ -13,6 +13,8 @@ export function ApiKeyGate({ onReady }) {
     setError(null)
     try {
       const created = await api.issueKey(adminToken, 'dashboard', tier)
+      // Se guarda para el panel de DLQ, que va contra los mismos endpoints /admin.
+      storeAdminToken(adminToken)
       setIssued(created)
       setKey(created.apiKey)
     } catch (e) {
