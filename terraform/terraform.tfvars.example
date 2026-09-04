@@ -1,0 +1,19 @@
+# cp terraform.tfvars.example terraform.tfvars y ajustar.
+# Todo tiene default; esto es para cuando alguno no sirve.
+
+# region = "us-east-1"
+
+# Mientras se prueba, conviene no publicar la demo al mundo entero.
+# allowed_ingress_cidrs = ["203.0.113.7/32"]
+
+# Con un dominio propio y un certificado en ACM, la demo pasa a HTTPS y el
+# WebSocket a wss:// sin tocar nada más.
+# certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/..."
+
+# Techo de gasto: es el número que hay que mirar antes que ningún otro.
+# worker_max_count = 6
+
+# Spot para los workers. Ponerlo en false sale ~3x más caro y no cambia nada
+# funcional: la interrupción de Spot es el mismo caso que un worker que muere,
+# y eso ya lo resuelven el PEL y el XCLAIM.
+# worker_use_spot = true
