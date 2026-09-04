@@ -20,8 +20,7 @@ spec:
   cooldownPeriod: 60
   # Nunca a cero, y no por miedo al cold start: con cero réplicas nadie corre el
   # PendingReclaimer, y los mensajes huérfanos de un worker que murió se quedarían
-  # en el PEL sin que nadie los reclame. Además `lagCount` necesita que el consumer
-  # group exista, y quien lo crea es el worker al arrancar.
+  # en el PEL sin que nadie los reclame.
   minReplicaCount: 1
   maxReplicaCount: 10
   advanced:
@@ -48,25 +47,35 @@ spec:
     # streams comparten flota: la prioridad se resuelve en el orden de lectura del
     # worker, no reservando pods.
     #
-    # lagCount = entradas sin consumir por el group (backlog real). El otro modo del
-    # scaler, pendingEntriesCount, mide el PEL: mensajes ya entregados y sin ackear.
-    # Ese número crece cuando los workers están *ocupados*, así que escalar por él
-    # confunde "hay trabajo pendiente" con "el trabajo está tardando".
+    # Se mide XLEN, y acá eso *es* el backlog: el worker borra cada mensaje del
+    # stream después de ackearlo, así que lo que queda adentro es exactamente el
+    # trabajo pendiente más el que está en vuelo.
+    #
+    # Los otros dos modos del scaler no sirven en este proyecto:
+    #  - lagCount lee el campo `lag` de XINFO GROUPS, que Redis deja en NULL en
+    #    cuanto se borran entradas del stream. Como el worker borra en cada ack,
+    #    ese campo viene vacío siempre y la métrica se lee como 0: el HPA se queda
+    #    clavado en 0/10 con la cola llena. Verificado en el cluster.
+    #  - pendingEntriesCount mide el PEL, o sea mensajes entregados y sin ackear.
+    #    Ese número sube cuando los workers están *ocupados*, así que confunde
+    #    "hay trabajo esperando" con "el trabajo está tardando".
+    #
+    # Ojo: en modo streamLength el scaler NO lleva consumerGroup. Ponerlo lo hace
+    # caer en silencio a modo pendingEntriesCount.
     #
     # 10 por réplica no es arbitrario: cada worker corre con WORKER_CONCURRENCY=4,
     # así que 10 encolados son ~2 rondas de trabajo antes de que llegue el pod nuevo.
     - type: redis-streams
       metadata:
-        address: redis:6379
+        # FQDN y no `redis:6379`: quien resuelve este nombre es el operador de
+        # KEDA, que vive en el namespace keda. Un nombre pelado lo buscaría ahí y
+        # no en inferqueue, y el ScaledObject se queda en READY=False sin llegar a
+        # crear el HPA.
+        address: redis.inferqueue.svc.cluster.local:6379
         stream: infer:priority
-        consumerGroup: inferqueue-workers
-        lagCount: "10"
-        # Por debajo de esto el ScaledObject se considera inactivo.
-        activationLagCount: "1"
+        streamLength: "10"
     - type: redis-streams
       metadata:
-        address: redis:6379
+        address: redis.inferqueue.svc.cluster.local:6379
         stream: infer:standard
-        consumerGroup: inferqueue-workers
-        lagCount: "10"
-        activationLagCount: "1"
+        streamLength: "10"
