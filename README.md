@@ -102,8 +102,8 @@ make watch               # los workers escalan de 1 a 10 y vuelven a bajar
 Lo que cambia respecto de compose no es el empaquetado sino el autoscaling: **los workers
 escalan por el backlog de la cola, no por CPU.** Un worker esperando la respuesta del modelo
 está ocioso en CPU mientras la cola crece, así que un HPA por utilización escalaría justo al
-revés de lo que hace falta. KEDA lee el lag del consumer group de Redis Streams y alimenta con
-eso un HPA normal. El gateway sí escala por CPU: su trabajo es síncrono y ahí la utilización sí
+revés de lo que hace falta. KEDA lee el largo del stream de Redis y alimenta con eso un HPA
+normal — que acá es el backlog real, porque el worker borra cada mensaje al ackearlo. El gateway sí escala por CPU: su trabajo es síncrono y ahí la utilización sí
 correlaciona.
 
 El detalle —probes, arranque ordenado sin `depends_on`, apagado que no pierde jobs en vuelo,

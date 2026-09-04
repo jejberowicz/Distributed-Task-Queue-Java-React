@@ -118,16 +118,24 @@ global. Si agregás un tipo de evento nuevo, va bajo `/topic/keys/{apiKeyId}/...
 corto (`15s`) compila, bindea bien como `Duration` en las properties, y hace que el contexto de
 Spring **no levante**. Ya rompió la app una vez (commit `6b18d50`).
 
-**10. El Deployment del worker no lleva `replicas`.** El campo está omitido a propósito: la escala
+**10. El trigger de KEDA va en modo `streamLength` y sin `consumerGroup`.** Los otros dos modos
+del scaler no sirven acá: `lagCount` lee el campo `lag` de `XINFO GROUPS`, que Redis deja en NULL
+en cuanto se borran entradas del stream —y el worker borra en cada ack—, así que se lee como 0 y
+el HPA no escala nunca; `pendingEntriesCount` mide el PEL, que sube cuando los workers están
+ocupados. Agregar `consumerGroup` al trigger lo hace caer en silencio a ese segundo modo.
+Además la `address` tiene que ser el FQDN: quien la resuelve es el operador de KEDA, que vive en
+otro namespace.
+
+**11. El Deployment del worker no lleva `replicas`.** El campo está omitido a propósito: la escala
 la maneja el HPA que crea el ScaledObject de KEDA. Si alguien lo agrega, cada `kubectl apply`
 devuelve el deployment a ese número y pisa al autoscaler.
 
-**11. `terminationGracePeriodSeconds` tiene que superar el shutdown de Spring.** Hoy son 60s de pod
+**12. `terminationGracePeriodSeconds` tiene que superar el shutdown de Spring.** Hoy son 60s de pod
 contra 40s de `spring.lifecycle.timeout-per-shutdown-phase` más 5s de `preStop`. Si se invierte, el
 SIGKILL llega antes de que el worker termine los jobs en vuelo y esos mensajes quedan en el PEL
 esperando el `XCLAIM`. Se recupera, pero se paga en latencia en cada scale-down.
 
-**12. Los tests de integración comparten los streams entre sí.** No asumas una base limpia: aislá
+**13. Los tests de integración comparten los streams entre sí.** No asumas una base limpia: aislá
 por `jobId` y descartá lo que sea de otro test. Mirá el helper `deliverTo()` en
 `QueueRecoveryIntegrationTest`.
 

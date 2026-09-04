@@ -44,16 +44,39 @@ todavía no consumió el consumer group.
 KEDA expone ese número como external metric y crea el HPA por debajo. El HPA es real
 y se ve con `kubectl get hpa -n inferqueue`; KEDA sólo aporta de dónde sale la métrica.
 
-Dos detalles que importan más de lo que parecen:
+El scaler de `redis-streams` tiene tres modos y **acá sólo sirve uno**:
 
-- Se usa **`lagCount`**, no `pendingEntriesCount`. El primero mide el backlog real; el
-  segundo mide el PEL, o sea mensajes ya entregados y sin ackear, que es un número que
-  sube justo cuando los workers están *ocupados*. Escalar por él confunde "hay trabajo
+- **`streamLength` (XLEN), el que se usa.** Suena a la métrica ingenua, pero en este
+  proyecto es la correcta: el worker borra cada mensaje del stream después de ackearlo,
+  así que lo que queda adentro es exactamente el trabajo pendiente más el que está en
+  vuelo.
+- **`lagCount` no funciona en este proyecto.** Lee el campo `lag` de `XINFO GROUPS`, y
+  Redis lo deja en `NULL` en cuanto se borran entradas del stream. Como el worker borra
+  en cada ack, viene vacío siempre y el scaler lo lee como 0: el HPA se queda clavado en
+  `0/10` con la cola llena. Se puede confirmar a mano:
+
+  ```bash
+  kubectl exec -n inferqueue redis-0 -- redis-cli XINFO GROUPS infer:priority
+  # entries-read y lag vuelven vacíos
+  ```
+
+- **`pendingEntriesCount` mide el PEL**, o sea mensajes entregados y sin ackear. Ese
+  número sube justo cuando los workers están *ocupados*, así que confunde "hay trabajo
   esperando" con "el trabajo está tardando".
-- **`minReplicaCount: 1`**, no cero. Con cero réplicas nadie corre el `PendingReclaimer`,
-  y los mensajes huérfanos de un worker muerto se quedarían en el PEL sin que nadie los
-  reclame con `XCLAIM`. Además `lagCount` necesita que el consumer group exista, y quien
-  lo crea es el worker al arrancar.
+
+Dos trampas de configuración que cuestan una tarde:
+
+- En modo `streamLength` el trigger **no lleva `consumerGroup`**. Si se lo agrega, el
+  scaler cae en silencio a modo `pendingEntriesCount` — no falla, sólo escala mal.
+- La `address` tiene que ser el **FQDN** (`redis.inferqueue.svc.cluster.local:6379`).
+  Quien resuelve ese nombre es el operador de KEDA, que vive en el namespace `keda`: un
+  `redis:6379` pelado lo busca ahí, no encuentra nada, y el ScaledObject se queda en
+  `READY=False` sin llegar a crear el HPA. El síntoma es justamente que
+  `kubectl get hpa` sólo muestra el del gateway.
+
+Y **`minReplicaCount: 1`**, no cero: con cero réplicas nadie corre el `PendingReclaimer`,
+y los mensajes huérfanos de un worker muerto se quedarían en el PEL sin que nadie los
+reclame con `XCLAIM`.
 
 El gateway, en cambio, sí escala por CPU (`41-gateway-hpa.yaml`): su trabajo es
 síncrono —validar, insertar, `XADD`— y ahí la utilización sí correlaciona con la carga.
@@ -64,8 +87,13 @@ Para verlo:
 
 ```bash
 make loadgen &        # 300 jobs
-make watch            # worker pasa de 1 a ~10, y vuelve a bajar de a uno
+make watch            # el worker escala, y vuelve a bajar de a uno
 ```
+
+Verificado en el cluster: con 300 jobs encolados la métrica llegó a `33/10 (avg)` y el
+deployment escaló 1 → 2 → 3 antes de drenar la cola. Cuánto sube depende de qué tan
+rápido drene: el `MockAdapter` es lo bastante veloz como para que rara vez se llegue al
+techo de 10.
 
 ### Probes, y por qué son tres
 
@@ -135,6 +163,21 @@ Dos cosas explícitas ahí:
 - **`/actuator` no se expone.** No tiene auth —el filtro de API key sólo cubre `/v1`— y
   publicaría métricas y detalle de health. Se scrapea desde adentro del cluster o con
   `kubectl port-forward`.
+
+### Diagnóstico cuando el autoscaler no se mueve
+
+`kubectl get hpa` es un mal primer paso: si el ScaledObject falló, el HPA del worker no
+existe y no hay nada que mirar. El orden útil es al revés:
+
+```bash
+kubectl get scaledobject -n inferqueue                 # ¿READY y ACTIVE?
+kubectl describe scaledobject worker -n inferqueue     # el error concreto, en Events
+kubectl -n keda logs deployment/keda-operator --tail=50
+kubectl exec -n inferqueue redis-0 -- redis-cli XLEN infer:priority   # ¿hay backlog?
+```
+
+Si `XLEN` da un número grande y el HPA sigue en `0/10`, el problema es la métrica, no la
+carga.
 
 ## Diferencias con `docker compose`
 
