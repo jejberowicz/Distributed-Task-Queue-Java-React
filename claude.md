@@ -19,7 +19,7 @@ inferencia tarda entre segundos y minutos, y no se puede sostener un request HTT
 tiempo. Todo lo demás —reintentos, DLQ, TTL, recuperación de workers muertos— sale de esa decisión.
 
 **Stack:** Java 21 · Spring Boot 3.3 · Redis Streams · PostgreSQL · React + Vite · STOMP · Docker
-Compose.
+Compose · Kubernetes (kind + KEDA).
 
 ---
 
@@ -43,6 +43,8 @@ Funciona de punta a punta. 56 tests verdes (`mvn test`), todo dockerizado.
 - Retención por `XTRIM` con techo por stream
 - Métricas Prometheus en `/actuator/prometheus`
 - Dashboard React: jobs en vivo, cancelación, panel de DLQ, streaming
+- Deploy a Kubernetes local: manifiestos, probes, Secrets, Ingress, y autoscaling de workers por
+  backlog de la cola (KEDA sobre Redis Streams)
 
 ---
 
@@ -66,6 +68,10 @@ Funciona de punta a punta. 56 tests verdes (`mvn test`), todo dockerizado.
 
 **Dashboard:** `dashboard/src/` — `useJobStream.js` concentra WebSocket y polling; los componentes
 son tontos.
+
+**Kubernetes:** `k8s/` — `manifests/` (kustomize), `kind/cluster.yaml`, `loadgen/` (Job que llena la
+cola para ver el escalado) y un `Makefile` que orquesta todo. El porqué de cada decisión está en
+`k8s/README.md`; acá abajo sólo lo que es fácil romper.
 
 ---
 
@@ -112,7 +118,16 @@ global. Si agregás un tipo de evento nuevo, va bajo `/topic/keys/{apiKeyId}/...
 corto (`15s`) compila, bindea bien como `Duration` en las properties, y hace que el contexto de
 Spring **no levante**. Ya rompió la app una vez (commit `6b18d50`).
 
-**10. Los tests de integración comparten los streams entre sí.** No asumas una base limpia: aislá
+**10. El Deployment del worker no lleva `replicas`.** El campo está omitido a propósito: la escala
+la maneja el HPA que crea el ScaledObject de KEDA. Si alguien lo agrega, cada `kubectl apply`
+devuelve el deployment a ese número y pisa al autoscaler.
+
+**11. `terminationGracePeriodSeconds` tiene que superar el shutdown de Spring.** Hoy son 60s de pod
+contra 40s de `spring.lifecycle.timeout-per-shutdown-phase` más 5s de `preStop`. Si se invierte, el
+SIGKILL llega antes de que el worker termine los jobs en vuelo y esos mensajes quedan en el PEL
+esperando el `XCLAIM`. Se recupera, pero se paga en latencia en cada scale-down.
+
+**12. Los tests de integración comparten los streams entre sí.** No asumas una base limpia: aislá
 por `jobId` y descartá lo que sea de otro test. Mirá el helper `deliverTo()` en
 `QueueRecoveryIntegrationTest`.
 
@@ -164,6 +179,22 @@ reencoló qué.
 - Bajo carga sostenida de prioridad, el stream standard se puede starvear. La salida sería reservar
   una fracción de los workers para standard.
 - No hay CI. Los tests de integración necesitan Docker, así que el runner tiene que tener socket.
+- En el cluster faltan NetworkPolicies (hoy cualquier pod alcanza el `:5432`), TLS, y un Prometheus
+  que scrapee el `/actuator/prometheus` que ya está expuesto.
+
+### Deploy: fases siguientes
+
+La Fase 1 (Kubernetes local con kind) está hecha y es donde vive el trabajo conceptual: los
+manifiestos son los mismos que correrían en producción. Lo que falta es plata y una URL pública.
+
+**Fase 2 — AWS con Terraform.** ECS Fargate + RDS PostgreSQL + ElastiCache, toda la infra como
+código, casi gratis con free tier. Lo que aporta que la Fase 1 no puede: una demo viva y pública.
+Los manifiestos de `k8s/` no se tiran — las mismas imágenes, las mismas variables de entorno, el
+mismo arranque ordenado, sólo cambia quién lo agenda. Postgres y Redis dejan de ser StatefulSets y
+pasan a ser servicios gestionados, que es como debería ser.
+
+**Fase 3 — EKS, opcional.** Sólo por el combo completo. El control plane cuesta ~73 USD/mes, así
+que es levantarlo un sábado, sacar capturas y `terraform destroy` el domingo.
 
 ### Ideas de features
 
@@ -187,6 +218,15 @@ Dashboard en `:5173`, API en `:8080`. Para usar GPU hace falta Ollama corriendo 
 ```bash
 cd backend && mvn test        # necesita Docker: los de integración levantan Postgres y Redis
 cd dashboard && npm run build
+```
+
+En Kubernetes local:
+
+```bash
+cd k8s && make up        # kind + ingress + metrics-server + KEDA + build + deploy
+make loadgen             # 300 jobs encolados, para ver mover el autoscaler
+make watch               # HPA, ScaledObject y pods
+make down                # borra el cluster
 ```
 
 **Nota sobre Testcontainers:** está pinneado a 1.21.3 porque la versión que fija Boot 3.3 no arranca
