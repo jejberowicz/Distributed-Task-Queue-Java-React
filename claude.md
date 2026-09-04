@@ -19,7 +19,7 @@ inferencia tarda entre segundos y minutos, y no se puede sostener un request HTT
 tiempo. Todo lo demás —reintentos, DLQ, TTL, recuperación de workers muertos— sale de esa decisión.
 
 **Stack:** Java 21 · Spring Boot 3.3 · Redis Streams · PostgreSQL · React + Vite · STOMP · Docker
-Compose.
+Compose · Kubernetes (kind + KEDA) · AWS (ECS Fargate + RDS + ElastiCache, con Terraform).
 
 ---
 
@@ -43,6 +43,10 @@ Funciona de punta a punta. 56 tests verdes (`mvn test`), todo dockerizado.
 - Retención por `XTRIM` con techo por stream
 - Métricas Prometheus en `/actuator/prometheus`
 - Dashboard React: jobs en vivo, cancelación, panel de DLQ, streaming
+- Deploy a Kubernetes local: manifiestos, probes, Secrets, Ingress, y autoscaling de workers por
+  backlog de la cola (KEDA sobre Redis Streams)
+- Deploy a AWS con Terraform: ECS Fargate (workers en Spot), RDS, ElastiCache, ALB, y el mismo
+  autoscaling por backlog rearmado con Lambda + CloudWatch + step scaling
 
 ---
 
@@ -66,6 +70,15 @@ Funciona de punta a punta. 56 tests verdes (`mvn test`), todo dockerizado.
 
 **Dashboard:** `dashboard/src/` — `useJobStream.js` concentra WebSocket y polling; los componentes
 son tontos.
+
+**Kubernetes:** `k8s/` — `manifests/` (kustomize), `kind/cluster.yaml`, `loadgen/` (Job que llena la
+cola para ver el escalado) y un `Makefile` que orquesta todo. El porqué de cada decisión está en
+`k8s/README.md`; acá abajo sólo lo que es fácil romper.
+
+**AWS:** `terraform/` — un solo módulo raíz partido por tema (`network.tf`, `data-stores.tf`,
+`ecs.tf`, `alb.tf`, `autoscaling.tf`, `iam.tf`, `ecr.tf`), `lambda/queue_depth.py` (el publicador
+de la métrica de cola), `scripts/loadgen.sh` y un `Makefile`. El mapeo pieza por pieza contra la
+Fase 1, el desglose de costos y las trampas están en `terraform/README.md`.
 
 ---
 
@@ -112,9 +125,51 @@ global. Si agregás un tipo de evento nuevo, va bajo `/topic/keys/{apiKeyId}/...
 corto (`15s`) compila, bindea bien como `Duration` en las properties, y hace que el contexto de
 Spring **no levante**. Ya rompió la app una vez (commit `6b18d50`).
 
-**10. Los tests de integración comparten los streams entre sí.** No asumas una base limpia: aislá
+**10. El trigger de KEDA va en modo `streamLength` y sin `consumerGroup`.** Los otros dos modos
+del scaler no sirven acá: `lagCount` lee el campo `lag` de `XINFO GROUPS`, que Redis deja en NULL
+en cuanto se borran entradas del stream —y el worker borra en cada ack—, así que se lee como 0 y
+el HPA no escala nunca; `pendingEntriesCount` mide el PEL, que sube cuando los workers están
+ocupados. Agregar `consumerGroup` al trigger lo hace caer en silencio a ese segundo modo.
+Además la `address` tiene que ser el FQDN: quien la resuelve es el operador de KEDA, que vive en
+otro namespace.
+
+En AWS la regla es la misma y el que la sostiene es `terraform/lambda/queue_depth.py`, que también
+mide `XLEN`. Si alguien "mejora" esa Lambda para leer el `lag`, el autoscaler de la Fase 2 deja de
+escalar exactamente igual que dejó de escalar el de la Fase 1.
+
+**11. El Deployment del worker no lleva `replicas`.** El campo está omitido a propósito: la escala
+la maneja el HPA que crea el ScaledObject de KEDA. Si alguien lo agrega, cada `kubectl apply`
+devuelve el deployment a ese número y pisa al autoscaler.
+
+El equivalente en AWS es el `lifecycle { ignore_changes = [desired_count] }` de
+`aws_ecs_service.worker`. Sin eso, cada `terraform apply` devuelve el servicio a
+`worker_min_count` y pisa a Application Auto Scaling.
+
+**12. `terminationGracePeriodSeconds` tiene que superar el shutdown de Spring.** Hoy son 60s de pod
+contra 40s de `spring.lifecycle.timeout-per-shutdown-phase` más 5s de `preStop`. Si se invierte, el
+SIGKILL llega antes de que el worker termine los jobs en vuelo y esos mensajes quedan en el PEL
+esperando el `XCLAIM`. Se recupera, pero se paga en latencia en cada scale-down.
+
+En ECS el campo se llama `stopTimeout` y hoy también son 60s, con un techo de 120 que impone
+Fargate. Ahí no hace falta el `preStop`: ECS desregistra del target group y espera el
+`deregistration_delay` **antes** de mandar el SIGTERM, en vez de hacerlo en paralelo como
+Kubernetes.
+
+**13. Los tests de integración comparten los streams entre sí.** No asumas una base limpia: aislá
 por `jobId` y descartá lo que sea de otro test. Mirá el helper `deliverTo()` en
 `QueueRecoveryIntegrationTest`.
+
+**14. El Redis de AWS va con `maxmemory-policy = noeviction`.** El default de ElastiCache es
+`volatile-lru`: al llenarse la memoria, Redis desaloja claves con TTL. En un cache eso es lo
+correcto; acá adentro hay una cola, un PEL con los jobs en vuelo y un ZSET de reintentos, y
+desalojar cualquiera de los tres es perder trabajo sin un solo error en ningún lado. El parameter
+group de `data-stores.tf` existe únicamente por esa línea.
+
+**15. Los permisos de secretos van en el rol de *ejecución* de ECS, no en el de tarea.** El de
+ejecución lo usa el agente antes de que el contenedor exista (bajar la imagen, resolver los
+`secrets`, abrir el log group); el de tarea lo usa la aplicación ya corriendo. Puestos en el
+segundo, la tarea muere en `PROVISIONING` con un `AccessDeniedException` y sin un solo log de la
+aplicación. Y un SecureString necesita `kms:Decrypt` además del permiso de SSM.
 
 ---
 
@@ -164,6 +219,29 @@ reencoló qué.
 - Bajo carga sostenida de prioridad, el stream standard se puede starvear. La salida sería reservar
   una fracción de los workers para standard.
 - No hay CI. Los tests de integración necesitan Docker, así que el runner tiene que tener socket.
+- En el cluster faltan NetworkPolicies (hoy cualquier pod alcanza el `:5432`), TLS, y un Prometheus
+  que scrapee el `/actuator/prometheus` que ya está expuesto.
+- **En AWS el worker no tiene equivalente de la liveness probe.** El health check del target group
+  cubre al gateway, pero el worker no está detrás de ningún balanceador: uno vivo pero colgado se
+  queda colgado. Haría falta un `healthCheck` de contenedor, y `eclipse-temurin:21-jre` no trae
+  `curl` ni `wget` con los que consultarse a sí misma.
+
+### Deploy: fases
+
+Las Fases 1 (kind) y 2 (AWS con Terraform) están hechas. Todo el trabajo conceptual vive en la 1;
+la 2 agrega la URL pública y la traducción del diseño a servicios gestionados.
+
+**Sobre el costo de la Fase 2, porque el plan original decía otra cosa.** No es "casi gratis con
+free tier": el free tier cubre RDS y ElastiCache por 12 meses, pero no cubre el ALB (~16 USD/mes)
+ni Fargate, que son los dos ítems más caros. Sale ~0.07 USD/hora prendido, unos 50 USD/mes si
+queda arriba. Así que se usa igual que la Fase 3 propone usar EKS: levantar, mostrar, destruir. Un
+fin de semana cuesta menos de 5 USD, y por eso `make down` es parte del flujo y no una nota al pie.
+
+**Fase 3 — EKS, opcional.** Sólo por el combo completo. El control plane cuesta ~73 USD/mes
+*además* de todo lo anterior, así que es levantarlo un sábado, sacar capturas y destruirlo el
+domingo. Buena parte de `terraform/` se reusa —VPC, RDS, ElastiCache, ECR— y lo que cambia es el
+cómputo: se vuelve a los manifiestos de `k8s/` y a KEDA, que allá sí existe. Es, en el fondo, la
+Fase 1 corriendo sobre los datos de la Fase 2.
 
 ### Ideas de features
 
@@ -187,6 +265,24 @@ Dashboard en `:5173`, API en `:8080`. Para usar GPU hace falta Ollama corriendo 
 ```bash
 cd backend && mvn test        # necesita Docker: los de integración levantan Postgres y Redis
 cd dashboard && npm run build
+```
+
+En Kubernetes local:
+
+```bash
+cd k8s && make up        # kind + ingress + metrics-server + KEDA + build + deploy
+make loadgen             # 300 jobs encolados, para ver mover el autoscaler
+make watch               # HPA, ScaledObject y pods
+make down                # borra el cluster
+```
+
+En AWS (cuesta plata; `make down` no es opcional):
+
+```bash
+cd terraform && make up  # ECR + push + infra → una URL pública
+make loadgen             # 300 jobs contra la demo
+make watch               # la métrica de cola, las alarmas, el desired count
+make down                # destruye todo
 ```
 
 **Nota sobre Testcontainers:** está pinneado a 1.21.3 porque la versión que fija Boot 3.3 no arranca

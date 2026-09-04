@@ -1,0 +1,81 @@
+# El autoscaling que importa en este proyecto: los workers escalan por backlog de
+# la cola, no por CPU. Un worker esperando la respuesta del modelo está ocioso en
+# CPU mientras la cola crece; un HPA por utilización lo vería relajado y escalaría
+# justo al revés de lo que hace falta.
+#
+# KEDA traduce "largo de la cola" a un external metric y crea el HPA por debajo
+# (`kubectl get hpa -n inferqueue` lo muestra). Es un HPA de verdad; lo único que
+# aporta KEDA es la fuente de la métrica.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker
+  namespace: inferqueue
+spec:
+  scaleTargetRef:
+    name: worker
+  pollingInterval: 10
+  # Cuánto espera antes de bajar tras el último trigger activo. Corto para que la
+  # demo se vea; en producción lo gobierna cuánto duele perder un job en vuelo.
+  cooldownPeriod: 60
+  # Nunca a cero, y no por miedo al cold start: con cero réplicas nadie corre el
+  # PendingReclaimer, y los mensajes huérfanos de un worker que murió se quedarían
+  # en el PEL sin que nadie los reclame.
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          # Ante un pico se sube sin ventana de estabilización: el trabajo ya está
+          # encolado, esperar sólo agrega latencia a jobs que ya existen.
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 30
+        scaleDown:
+          # Bajar es lo caro: cada pod que se va puede dejar mensajes en el PEL
+          # esperando el XCLAIM. Se baja de a uno y con ventana.
+          stabilizationWindowSeconds: 120
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+  triggers:
+    # Un trigger por stream, y KEDA suma las réplicas que pide cada uno. Los dos
+    # streams comparten flota: la prioridad se resuelve en el orden de lectura del
+    # worker, no reservando pods.
+    #
+    # Se mide XLEN, y acá eso *es* el backlog: el worker borra cada mensaje del
+    # stream después de ackearlo, así que lo que queda adentro es exactamente el
+    # trabajo pendiente más el que está en vuelo.
+    #
+    # Los otros dos modos del scaler no sirven en este proyecto:
+    #  - lagCount lee el campo `lag` de XINFO GROUPS, que Redis deja en NULL en
+    #    cuanto se borran entradas del stream. Como el worker borra en cada ack,
+    #    ese campo viene vacío siempre y la métrica se lee como 0: el HPA se queda
+    #    clavado en 0/10 con la cola llena. Verificado en el cluster.
+    #  - pendingEntriesCount mide el PEL, o sea mensajes entregados y sin ackear.
+    #    Ese número sube cuando los workers están *ocupados*, así que confunde
+    #    "hay trabajo esperando" con "el trabajo está tardando".
+    #
+    # Ojo: en modo streamLength el scaler NO lleva consumerGroup. Ponerlo lo hace
+    # caer en silencio a modo pendingEntriesCount.
+    #
+    # 10 por réplica no es arbitrario: cada worker corre con WORKER_CONCURRENCY=4,
+    # así que 10 encolados son ~2 rondas de trabajo antes de que llegue el pod nuevo.
+    - type: redis-streams
+      metadata:
+        # FQDN y no `redis:6379`: quien resuelve este nombre es el operador de
+        # KEDA, que vive en el namespace keda. Un nombre pelado lo buscaría ahí y
+        # no en inferqueue, y el ScaledObject se queda en READY=False sin llegar a
+        # crear el HPA.
+        address: redis.inferqueue.svc.cluster.local:6379
+        stream: infer:priority
+        streamLength: "10"
+    - type: redis-streams
+      metadata:
+        address: redis.inferqueue.svc.cluster.local:6379
+        stream: infer:standard
+        streamLength: "10"

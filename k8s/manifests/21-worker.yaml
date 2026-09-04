@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: inferqueue
+  labels:
+    app: worker
+spec:
+  # `replicas` se omite a propósito: lo maneja el HPA que crea KEDA
+  # (40-worker-scaledobject.yaml). Si estuviera acá, cada `kubectl apply`
+  # devolvería el deployment a ese número y pisaría al autoscaler.
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 50
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: worker
+      initContainers:
+        # Los workers arrancan con `ddl-auto: validate` y sin Flyway, así que
+        # necesitan el schema ya migrado. El gateway es quien migra, y sólo se
+        # declara ready después de hacerlo: esperar su readiness es esperar el schema.
+        - name: wait-for-schema
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - until wget -q -O- http://gateway:8080/actuator/health/readiness | grep -q UP; do echo esperando el schema; sleep 3; done
+      containers:
+        - name: worker
+          image: inferqueue/backend:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: inferqueue-config
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: inferqueue-secrets
+                  key: POSTGRES_PASSWORD
+            - name: WORKER_ENABLED
+              value: "true"
+            # El gateway ya corrió las migraciones; los workers sólo validan.
+            - name: SPRING_FLYWAY_ENABLED
+              value: "false"
+          # El worker no recibe tráfico, pero la probe de readiness igual sirve:
+          # es lo que mira el rollout para no tumbar la flota entera de una.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+      # El equivalente al `stop_grace_period` de compose. Un worker que recibe
+      # SIGTERM deja de leer del stream y termina los jobs en vuelo; si el SIGKILL
+      # llega antes, esos mensajes quedan en el PEL y hay que esperar el XCLAIM del
+      # reclaimer. Correcto, pero se paga en latencia en cada scale-down.
+      terminationGracePeriodSeconds: 60

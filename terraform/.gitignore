@@ -1,0 +1,7 @@
+.terraform/
+.build/
+terraform.tfstate
+terraform.tfstate.*
+terraform.tfvars
+*.tfplan
+__pycache__/

@@ -1,6 +1,12 @@
 spring:
   application:
     name: inferqueue
+  # Al recibir SIGTERM deja de aceptar requests nuevos y espera a que terminen los
+  # que están en curso. Sin esto, el rolling update de Kubernetes corta respuestas
+  # a mitad de camino. El timeout tiene que quedar por debajo del
+  # terminationGracePeriodSeconds del pod, o el SIGKILL llega primero.
+  lifecycle:
+    timeout-per-shutdown-phase: 40s
   threads:
     virtual:
       enabled: true
@@ -21,6 +27,7 @@ spring:
 
 server:
   port: ${PORT:8080}
+  shutdown: graceful
 
 management:
   endpoints:
@@ -30,6 +37,12 @@ management:
   endpoint:
     health:
       show-details: always
+      # Habilita /actuator/health/liveness y /readiness. Boot los prende solo si
+      # detecta que corre en Kubernetes, pero explícito es mejor: así las mismas
+      # URLs responden en compose y en local, y las probes no dependen de que la
+      # autodetección acierte.
+      probes:
+        enabled: true
 
 inferqueue:
   queue:

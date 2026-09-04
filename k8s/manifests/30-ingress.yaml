@@ -1,0 +1,50 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: inferqueue
+  namespace: inferqueue
+  annotations:
+    # Una conexión STOMP ociosa espera eventos de jobs que pueden tardar minutos.
+    # Con el default de 60s el ingress la corta y el dashboard reconecta en loop.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          # La API va directo al Service del gateway. El nginx que vive dentro de la
+          # imagen del dashboard también sabe proxear /v1 —lo necesita en compose,
+          # donde no hay ingress— pero acá ese salto sobra: un hop menos y el
+          # dashboard queda como lo que es, estáticos.
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  number: 8080
+          - path: /admin
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  number: 8080
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  number: 8080
+          # /actuator queda deliberadamente afuera: no tiene auth (el filtro de API
+          # key sólo cubre /v1) y expondría métricas y detalle de health a internet.
+          # Se scrapea desde adentro del cluster, o con `kubectl port-forward`.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dashboard
+                port:
+                  number: 80

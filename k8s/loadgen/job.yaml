@@ -1,0 +1,93 @@
+# Job de carga: llena la cola para que el ScaledObject tenga qué escalar.
+# Es lo que hace visible la Fase 1 — sin backlog, el HPA se queda en 1 réplica y
+# no hay nada que mirar.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loadgen-script
+  namespace: inferqueue
+data:
+  load.sh: |
+    set -eu
+    JOBS="${JOBS:-300}"
+    BATCH=100
+    API="http://gateway:8080"
+
+    # Una API key nueva por lote. El rate limit del tier PREMIUM es 300 req/min y el
+    # batch cobra una unidad por job, así que una sola key se quedaría sin cuota a
+    # mitad de la corrida y el 429 arruinaría la demo. Emitir keys es barato.
+    new_key() {
+      curl -sf -X POST "$API/admin/api-keys" \
+        -H "X-Admin-Token: $ADMIN_TOKEN" \
+        -H 'Content-Type: application/json' \
+        -d '{"name":"loadgen","tier":"PREMIUM"}' \
+        | sed -n 's/.*"apiKey":"\([^"]*\)".*/\1/p'
+    }
+
+    # {"jobs":[{...} x N]} armado a mano: la imagen de curl no trae jq.
+    payload() {
+      n="$1"
+      printf '{"jobs":['
+      i=0
+      while [ "$i" -lt "$n" ]; do
+        if [ "$i" -gt 0 ]; then printf ','; fi
+        printf '{"model":"llama3","type":"COMPLETION","prompt":"carga %s-%s","ttlSeconds":900}' "$2" "$i"
+        i=$((i + 1))
+      done
+      printf ']}'
+    }
+
+    sent=0
+    batch_no=0
+    while [ "$sent" -lt "$JOBS" ]; do
+      remaining=$((JOBS - sent))
+      size=$BATCH
+      # Explícito y no `[ ... ] && size=...`: con `set -e`, una lista && que
+      # termina en falso es una de las formas más fáciles de matar el script.
+      if [ "$remaining" -lt "$BATCH" ]; then size=$remaining; fi
+      key=$(new_key)
+      # Idempotency-Key distinta por lote: con la misma, el segundo request
+      # devolvería el primero replayed y no encolaría nada.
+      payload "$size" "$batch_no" | curl -sf -o /dev/null -X POST "$API/v1/jobs/batch" \
+        -H "Authorization: Bearer $key" \
+        -H "Idempotency-Key: loadgen-$(date +%s)-$batch_no" \
+        -H 'Content-Type: application/json' \
+        --data-binary @-
+      sent=$((sent + size))
+      batch_no=$((batch_no + 1))
+      echo "encolados $sent/$JOBS"
+    done
+    echo "listo: mirá 'kubectl get hpa -n inferqueue -w'"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: loadgen
+  namespace: inferqueue
+spec:
+  # Sin reintentos: si falla, querés ver el error, no seis corridas encimadas
+  # encolando jobs de más.
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: loadgen
+          image: curlimages/curl:8.11.1
+          command: ["sh", "/scripts/load.sh"]
+          env:
+            - name: JOBS
+              value: "300"
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: inferqueue-secrets
+                  key: ADMIN_TOKEN
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+      volumes:
+        - name: scripts
+          configMap:
+            name: loadgen-script

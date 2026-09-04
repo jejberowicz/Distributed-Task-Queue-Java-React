@@ -1,0 +1,129 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: inferqueue
+spec:
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: inferqueue
+  labels:
+    app: gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      # Las réplicas del frente reparten sesiones WebSocket: si las dos caen con el
+      # nodo, se cortan todas juntas. `preferred` y no `required` para que en un
+      # cluster de un solo nodo igual se agenden.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: gateway
+      initContainers:
+        # Spring no reintenta la conexión inicial a la base: si Postgres todavía no
+        # está, el contexto no levanta y el pod entra en CrashLoopBackOff. Es
+        # recuperable, pero ensucia el arranque y retrasa todo por el backoff.
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432; do echo esperando postgres; sleep 2; done"]
+      containers:
+        - name: gateway
+          image: inferqueue/backend:dev
+          # Local: la imagen la mete `kind load`, no hay registry del que bajarla.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: inferqueue-config
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: inferqueue-secrets
+                  key: POSTGRES_PASSWORD
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: inferqueue-secrets
+                  key: ADMIN_TOKEN
+            # El gateway no consume la cola: se escala el frente sin tocar la
+            # capacidad de inferencia, y al revés.
+            - name: WORKER_ENABLED
+              value: "false"
+          lifecycle:
+            preStop:
+              # Kubernetes manda el SIGTERM y borra el endpoint en paralelo, no en
+              # orden. Sin esta pausa el kube-proxy sigue mandando requests unos
+              # milisegundos a un pod que ya está cerrando: 502 en cada deploy.
+              exec:
+                command: ["sleep", "5"]
+          # Las tres probes hacen cosas distintas y confundirlas es el error clásico:
+          #  - startup: da tiempo al arranque de la JVM sin que liveness lo mate.
+          #  - readiness: saca al pod del Service cuando no puede atender.
+          #  - liveness: lo reinicia sólo si está colgado de verdad.
+          # Flyway corre acá, y con dos réplicas arrancan en paralelo: el lock de la
+          # tabla de historial serializa las migraciones, la segunda no hace nada.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            # El request es lo que mira el scheduler y lo que usa el HPA de CPU como
+            # denominador. Sin request, el HPA por utilización no tiene contra qué medir.
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+      # Tiene que superar el preStop más el shutdown ordenado de Spring
+      # (spring.lifecycle.timeout-per-shutdown-phase), o el SIGKILL corta requests vivos.
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway
+  namespace: inferqueue
+spec:
+  # Un drain de nodo no puede dejar la API sin ninguna réplica viva.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: gateway

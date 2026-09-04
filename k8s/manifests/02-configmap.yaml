@@ -1,0 +1,16 @@
+# Config no sensible. Va separada del Secret porque tiene otro ciclo de vida:
+# esto se lee en un `kubectl get cm -o yaml` sin exponer nada.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inferqueue-config
+  namespace: inferqueue
+data:
+  DB_URL: jdbc:postgresql://postgres:5432/inferqueue
+  DB_USER: inferqueue
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  # mock: la demo no necesita GPU. Para inferencia real hay que apuntar
+  # OLLAMA_URL a un servicio alcanzable desde el cluster (no host.docker.internal).
+  MODEL_ADAPTER: mock
+  WORKER_CONCURRENCY: "4"
