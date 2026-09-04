@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: inferqueue
+resources:
+  - 00-namespace.yaml
+  - 01-secret.yaml
+  - 02-configmap.yaml
+  - 10-postgres.yaml
+  - 11-redis.yaml
+  - 20-gateway.yaml
+  - 21-worker.yaml
+  - 22-dashboard.yaml
+  - 30-ingress.yaml
+  # Requiere los CRDs de KEDA ya instalados (`make keda`).
+  - 40-worker-scaledobject.yaml
+  - 41-gateway-hpa.yaml
+labels:
+  # includeSelectors: false a propósito. Si la etiqueta entrara en el selector de
+  # los StatefulSet, que es inmutable, cualquier cambio futuro de labels obligaría
+  # a borrar y recrear Postgres y Redis.
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: inferqueue

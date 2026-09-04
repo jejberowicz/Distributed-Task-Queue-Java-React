@@ -1,0 +1,27 @@
+# El gateway sí escala por CPU: es puro trabajo síncrono —parsear, validar, un
+# insert, un XADD— y ahí la utilización sí correlaciona con la carga.
+# Que el frente y los workers escalen por señales distintas es el punto: son
+# cuellos de botella distintos.
+#
+# Necesita metrics-server instalado (el Makefile lo hace); sin él el HPA queda en
+# `<unknown>/70%` y no toma ninguna decisión.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway
+  namespace: inferqueue
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gateway
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Sobre el `requests.cpu` del pod, no sobre el límite ni sobre el nodo.
+          averageUtilization: 70

@@ -1,0 +1,29 @@
+# Cluster local de 3 nodos: uno de control y dos de trabajo.
+#
+# Dos workers no son decorativos: sin más de un nodo, las reglas de anti-afinidad
+# de gateway y worker no tienen dónde repartir réplicas y el scheduler las ignora
+# en silencio. Con dos nodos, `kubectl get pods -o wide` muestra el reparto real.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: inferqueue
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      # ingress-nginx en kind se agenda por este label; sin él el controller
+      # queda Pending para siempre.
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      # El :80 del host entra al ingress del cluster. Es lo que hace que
+      # http://localhost funcione sin port-forward ni NodePort a mano.
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
+  - role: worker
+  - role: worker
