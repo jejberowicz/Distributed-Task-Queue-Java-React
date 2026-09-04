@@ -4,7 +4,7 @@ Plataforma de AI inference asíncrona. Submitís un job por REST, se encola en R
 pool de workers lo procesa contra Ollama y el resultado llega al dashboard en tiempo real por
 WebSocket. Es, en chico, lo que hacen Replicate o Together.ai por dentro.
 
-**Stack:** Java 21 + Spring Boot 3 · Redis Streams · PostgreSQL · React + Vite · STOMP/WebSocket · Docker Compose · Kubernetes (kind)
+**Stack:** Java 21 + Spring Boot 3 · Redis Streams · PostgreSQL · React + Vite · STOMP/WebSocket · Docker Compose · Kubernetes (kind) · AWS con Terraform
 
 ---
 
@@ -108,6 +108,35 @@ correlaciona.
 
 El detalle —probes, arranque ordenado sin `depends_on`, apagado que no pierde jobs en vuelo,
 Secrets, Ingress con WebSocket— está en [`k8s/README.md`](k8s/README.md).
+
+### En AWS
+
+La misma cosa, con la infraestructura como código y una URL pública. ECS Fargate para el
+cómputo, RDS y ElastiCache para los datos, un ALB adelante.
+
+```bash
+cd terraform && make up   # ECR + push de imágenes + toda la infra
+make loadgen              # encola 300 jobs
+make watch                # la cola, las alarmas, y el worker escalando
+make down                 # destruye todo
+```
+
+Las imágenes son las mismas: no hay una línea de Java distinta entre compose, kind y AWS.
+Lo que cambia es quién agenda los contenedores y, sobre todo, **quién mide la cola**. KEDA
+no existe fuera de Kubernetes, así que el autoscaling se rearma con las piezas de AWS: una
+Lambda de veinte líneas hace `XLEN` cada minuto y publica el backlog como métrica de
+CloudWatch, y una alarma sobre esa métrica dispara una política de step scaling. La métrica
+es la misma y por el mismo motivo; lo que se paga es un minuto de latencia de reacción en
+vez de quince segundos.
+
+Los workers corren en Fargate Spot, que cuesta 70% menos a cambio de que AWS pueda matarlos
+con dos minutos de aviso. Para este sistema eso no es un riesgo nuevo: es exactamente el
+caso que el PEL y el `XCLAIM` ya resuelven.
+
+No es gratis —unos 0.07 USD/hora, sobre todo por el ALB y por Fargate, que no tienen free
+tier— así que está pensado para levantarlo, mostrarlo y destruirlo. El desglose, el mapeo
+pieza por pieza contra la Fase 1 y las trampas que costaron tiempo están en
+[`terraform/README.md`](terraform/README.md).
 
 ### API
 
