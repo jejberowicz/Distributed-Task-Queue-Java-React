@@ -8,7 +8,7 @@ API         ?= http://localhost:8080
 WORKERS     ?= 2
 PROMPT      ?= explicá XCLAIM
 
-.PHONY: up down clean ps logs scale apikey job dlq urls
+.PHONY: up down clean ps logs scale apikey job dlq loadgen urls
 
 # --wait vuelve recién cuando los healthchecks pasan: al terminar, la API ya responde.
 up:
@@ -43,6 +43,11 @@ job:
 		-H "Idempotency-Key: make-$$(date +%s%N)" \
 		-d '{"model":"llama3","type":"COMPLETION","prompt":"$(PROMPT)","ttlSeconds":300}'; echo
 
+# Carga de prueba con la key del dashboard, para ver los jobs en su tabla.
+# JOBS, FAILS, MODEL y DELAY se pasan igual: make loadgen KEY=iq_… JOBS=50
+loadgen:
+	@KEY="$(KEY)" sh scripts/loadgen.sh
+
 dlq:
 	@curl -sf $(API)/admin/dlq -H 'X-Admin-Token: $(ADMIN_TOKEN)'; echo
 
@@ -51,5 +56,5 @@ urls:
 	@echo "  dashboard   http://localhost:5173"
 	@echo "  api         $(API)"
 	@echo
-	@echo "  make apikey   →   make job KEY=iq_…   ·   make logs   ·   make down"
+	@echo "  make apikey   →   make job KEY=iq_…   ·   make loadgen KEY=iq_…   ·   make down"
 	@echo
