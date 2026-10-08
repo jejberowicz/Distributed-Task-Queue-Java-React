@@ -63,6 +63,17 @@ docker compose up --build          # postgres, redis, gateway, 2 workers, dashbo
 
 Dashboard en http://localhost:5173, API en http://localhost:8080.
 
+O con los atajos del `Makefile` de la raíz: `make up` (espera a que pasen los healthchecks),
+`make apikey`, `make job KEY=iq_…`, `make logs`, `make scale WORKERS=4`, `make down`.
+
+Si el 5432 o el 6379 ya están tomados (otro proyecto con su Postgres, por ejemplo):
+`POSTGRES_PORT=5433 REDIS_PORT=6380 make up`. Sólo cambia el puerto expuesto en el host;
+adentro de compose los servicios se siguen hablando por los de siempre.
+
+Para ver el sistema con carga, `make loadgen KEY=iq_…` encola 20 jobs con la key del dashboard
+(COMPLETION y CLASSIFICATION, por las dos colas, y 2 que fallan a propósito y terminan en la DLQ).
+`JOBS`, `FAILS`, `MODEL` y `DELAY` lo ajustan.
+
 Emitir una API key y encolar un job:
 
 ```bash

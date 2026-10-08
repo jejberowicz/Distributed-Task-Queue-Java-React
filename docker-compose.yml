@@ -13,7 +13,8 @@ services:
       timeout: 3s
       retries: 10
     ports:
-      - "5432:5432"
+      # Configurable: otro proyecto con su propio Postgres suele tener tomado el 5432.
+      - "${POSTGRES_PORT:-5432}:5432"
 
   redis:
     image: redis:7-alpine
@@ -27,7 +28,7 @@ services:
       timeout: 3s
       retries: 10
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
 
   # API + WebSockets. No consume la cola: así se puede escalar el frente sin
   # tocar la capacidad de inference, y viceversa.
