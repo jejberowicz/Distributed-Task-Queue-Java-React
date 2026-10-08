@@ -63,6 +63,9 @@ docker compose up --build          # postgres, redis, gateway, 2 workers, dashbo
 
 Dashboard en http://localhost:5173, API en http://localhost:8080.
 
+O con los atajos del `Makefile` de la raíz: `make up` (espera a que pasen los healthchecks),
+`make apikey`, `make job KEY=iq_…`, `make logs`, `make scale WORKERS=4`, `make down`.
+
 Emitir una API key y encolar un job:
 
 ```bash
