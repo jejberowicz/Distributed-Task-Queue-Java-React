@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { api } from '../api/client'
 
-const MODELS = ['llama3', 'llama3:70b', 'nomic-embed-text', 'mistral']
+// llama3.2:1b primero: es el único de la lista que anda bien en una máquina sin GPU.
+const MODELS = ['llama3.2:1b', 'llama3', 'llama3:70b', 'nomic-embed-text', 'mistral']
 
 export function SubmitForm({ apiKey, onSubmitted, onError }) {
   const [model, setModel] = useState(MODELS[0])
